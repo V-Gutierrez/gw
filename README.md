@@ -1,6 +1,27 @@
-# gw — Google Workspace CLI
+<p align="center">
+  <img src="assets/logo.png" alt="gw logo" width="200" />
+</p>
 
-Google Workspace in your terminal: Gmail, Calendar, Drive, Sheets, and Docs through one CLI.
+<h1 align="center">gw</h1>
+
+<p align="center">
+  <strong>Google Workspace in your terminal.</strong><br/>
+  Gmail, Calendar, Drive, Sheets, Docs — one CLI. Permanent OAuth. Zero bloat.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/v/release/v-gutierrez/gw" alt="Version" />
+  <img src="https://img.shields.io/badge/python-3.11+-blue" alt="Python" />
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
+</p>
+
+---
+
+## Why
+
+Every Google Workspace tool is either calendar-only, admin-only, or abandoned. No single CLI covers Gmail + Calendar + Drive + Sheets + Docs with permanent OAuth.
+
+`gw` fixes that. Login once, use forever. No re-auth, no token expiry, no config files to manage.
 
 ## Install
 
