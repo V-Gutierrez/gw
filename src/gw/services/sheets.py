@@ -1,9 +1,22 @@
 from __future__ import annotations
 
 import click
+from typing import Any
 
 from gw.auth import build_service
 from gw.output import json_option, print_human, print_json, use_json_output
+
+
+def read_sheet_values(spreadsheet_id: str, range_name: str) -> dict[str, Any]:
+    service = build_service("sheets", "v4")
+    values = (
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=spreadsheet_id, range=range_name)
+        .execute()
+        .get("values", [])
+    )
+    return {"spreadsheet_id": spreadsheet_id, "range": range_name, "rows": values}
 
 
 def register_sheets_commands(group: click.Group) -> None:
@@ -18,18 +31,11 @@ def register_sheets_commands(group: click.Group) -> None:
         range_name: str,
         json_output: bool | None,
     ) -> None:
-        service = build_service("sheets", "v4")
-        values = (
-            service.spreadsheets()
-            .values()
-            .get(spreadsheetId=spreadsheet_id, range=range_name)
-            .execute()
-            .get("values", [])
-        )
-        data = {"spreadsheet_id": spreadsheet_id, "range": range_name, "rows": values}
+        data = read_sheet_values(spreadsheet_id=spreadsheet_id, range_name=range_name)
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
+            values = data["rows"]
             if not values:
                 print_human("No data found.", emoji="📊")
                 return

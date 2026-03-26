@@ -6,19 +6,23 @@ from gw.auth import build_service
 from gw.output import json_option, print_human, print_json, use_json_output
 
 
+def list_drive_files(max_results: int = 10):
+    service = build_service("drive", "v3")
+    return (
+        service.files()
+        .list(pageSize=max_results, fields="files(id, name, mimeType, modifiedTime)")
+        .execute()
+        .get("files", [])
+    )
+
+
 def register_drive_commands(group: click.Group) -> None:
     @group.command("list")
     @click.option("--max", "max_results", default=10, type=int, show_default=True)
     @json_option
     @click.pass_context
     def list_command(ctx: click.Context, max_results: int, json_output: bool | None) -> None:
-        service = build_service("drive", "v3")
-        files = (
-            service.files()
-            .list(pageSize=max_results, fields="files(id, name, mimeType, modifiedTime)")
-            .execute()
-            .get("files", [])
-        )
+        files = list_drive_files(max_results=max_results)
         if use_json_output(ctx, json_output):
             print_json(files)
         else:

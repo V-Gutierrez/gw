@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.0 (2026-03-26)
+
+### Features
+- `gw auth login --headless` — browserless OAuth flow for servers, agents, and containers
+- `gw auth setup` — interactive onboarding wizard for credentials import and first login
+- `gw doctor` — health check for credentials, token, auth state, and timezone configuration
+- `gw completion {bash,zsh,fish}` — built-in shell completion script output
+- `gw mcp serve` — stdio MCP server exposing Gmail, Calendar, Drive, Sheets, and Docs tools
+- Consistent CLI exit codes with JSON error output when `--json` is enabled
+
 ## v0.1.0 (2026-03-26)
 
 ### Features

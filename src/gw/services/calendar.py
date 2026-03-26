@@ -67,6 +67,92 @@ def _print_events(events: list[dict[str, Any]], label: str, include_calendar: bo
         print_human(f"  • {format_event_time(event)}: {event['summary']}{suffix}")
 
 
+def get_calendar_today(
+    timezone: str, default_calendar: str, all_calendars: bool = False
+) -> list[dict[str, Any]]:
+    start, end = date_range_today(timezone)
+    return _fetch_events(to_rfc3339(start), to_rfc3339(end), all_calendars, default_calendar)
+
+
+def get_calendar_tomorrow(
+    timezone: str,
+    default_calendar: str,
+    all_calendars: bool = False,
+) -> list[dict[str, Any]]:
+    start, end = date_range_today(timezone)
+    start += timedelta(days=1)
+    end += timedelta(days=1)
+    return _fetch_events(to_rfc3339(start), to_rfc3339(end), all_calendars, default_calendar)
+
+
+def get_calendar_week(
+    timezone: str, default_calendar: str, all_calendars: bool = False
+) -> list[dict[str, Any]]:
+    start, end = date_range_week(timezone)
+    return _fetch_events(to_rfc3339(start), to_rfc3339(end), all_calendars, default_calendar)
+
+
+def create_calendar_event(
+    title: str,
+    start: str,
+    end: str,
+    timezone: str,
+    default_calendar: str,
+    description: str = "",
+    all_day: bool = False,
+    recurrence: tuple[str, ...] = (),
+    calendar_id: str | None = None,
+    reminder: int | None = None,
+) -> dict[str, Any]:
+    service = _calendar_service()
+    target_calendar = calendar_id or default_calendar
+    start_dt = parse_date(start, timezone)
+    end_dt = parse_date(end, timezone)
+
+    if all_day:
+        event: dict[str, Any] = {
+            "summary": title,
+            "description": description,
+            "start": {"date": start_dt.date().isoformat()},
+            "end": {"date": end_dt.date().isoformat()},
+        }
+    else:
+        event = {
+            "summary": title,
+            "description": description,
+            "start": {"dateTime": to_rfc3339(start_dt), "timeZone": timezone},
+            "end": {"dateTime": to_rfc3339(end_dt), "timeZone": timezone},
+        }
+
+    if recurrence:
+        event["recurrence"] = list(recurrence)
+    if reminder is not None:
+        event["reminders"] = {
+            "useDefault": False,
+            "overrides": [{"method": "popup", "minutes": reminder}],
+        }
+
+    created = service.events().insert(calendarId=target_calendar, body=event).execute()
+    return {
+        "id": created.get("id"),
+        "html_link": created.get("htmlLink"),
+        "calendar": target_calendar,
+    }
+
+
+def list_calendars() -> list[dict[str, Any]]:
+    service = _calendar_service()
+    calendars = service.calendarList().list().execute().get("items", [])
+    return [
+        {
+            "id": item.get("id"),
+            "summary": item.get("summary"),
+            "primary": bool(item.get("primary")),
+        }
+        for item in calendars
+    ]
+
+
 def register_calendar_commands(group: click.Group) -> None:
     @group.command("today")
     @click.option("--all", "all_calendars", is_flag=True, help="Include all calendars.")
@@ -74,13 +160,7 @@ def register_calendar_commands(group: click.Group) -> None:
     @click.pass_context
     def today_command(ctx: click.Context, all_calendars: bool, json_output: bool | None) -> None:
         config = ctx.obj["config"]
-        start, end = date_range_today(config.timezone)
-        events = _fetch_events(
-            to_rfc3339(start),
-            to_rfc3339(end),
-            all_calendars,
-            config.default_calendar,
-        )
+        events = get_calendar_today(config.timezone, config.default_calendar, all_calendars)
         if use_json_output(ctx, json_output):
             print_json(events)
         else:
@@ -94,15 +174,7 @@ def register_calendar_commands(group: click.Group) -> None:
         ctx: click.Context, all_calendars: bool, json_output: bool | None
     ) -> None:
         config = ctx.obj["config"]
-        start, end = date_range_today(config.timezone)
-        start += timedelta(days=1)
-        end += timedelta(days=1)
-        events = _fetch_events(
-            to_rfc3339(start),
-            to_rfc3339(end),
-            all_calendars,
-            config.default_calendar,
-        )
+        events = get_calendar_tomorrow(config.timezone, config.default_calendar, all_calendars)
         if use_json_output(ctx, json_output):
             print_json(events)
         else:
@@ -114,13 +186,7 @@ def register_calendar_commands(group: click.Group) -> None:
     @click.pass_context
     def week_command(ctx: click.Context, all_calendars: bool, json_output: bool | None) -> None:
         config = ctx.obj["config"]
-        start, end = date_range_week(config.timezone)
-        events = _fetch_events(
-            to_rfc3339(start),
-            to_rfc3339(end),
-            all_calendars,
-            config.default_calendar,
-        )
+        events = get_calendar_week(config.timezone, config.default_calendar, all_calendars)
         if use_json_output(ctx, json_output):
             print_json(events)
         else:
@@ -150,61 +216,28 @@ def register_calendar_commands(group: click.Group) -> None:
         json_output: bool | None,
     ) -> None:
         config = ctx.obj["config"]
-        service = _calendar_service()
-        target_calendar = calendar_id or config.default_calendar
-        start_dt = parse_date(start, config.timezone)
-        end_dt = parse_date(end, config.timezone)
-
-        if all_day:
-            event: dict[str, Any] = {
-                "summary": title,
-                "description": description,
-                "start": {"date": start_dt.date().isoformat()},
-                "end": {"date": end_dt.date().isoformat()},
-            }
-        else:
-            event = {
-                "summary": title,
-                "description": description,
-                "start": {"dateTime": to_rfc3339(start_dt), "timeZone": config.timezone},
-                "end": {"dateTime": to_rfc3339(end_dt), "timeZone": config.timezone},
-            }
-
-        if recurrence:
-            event["recurrence"] = list(recurrence)
-        if reminder is not None:
-            event["reminders"] = {
-                "useDefault": False,
-                "overrides": [{"method": "popup", "minutes": reminder}],
-            }
-
-        created = service.events().insert(calendarId=target_calendar, body=event).execute()
-        data = {
-            "id": created.get("id"),
-            "html_link": created.get("htmlLink"),
-            "calendar": target_calendar,
-        }
+        data = create_calendar_event(
+            title=title,
+            start=start,
+            end=end,
+            timezone=config.timezone,
+            default_calendar=config.default_calendar,
+            description=description,
+            all_day=all_day,
+            recurrence=recurrence,
+            calendar_id=calendar_id,
+            reminder=reminder,
+        )
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
-            print_success(
-                f"Event created: {created.get('htmlLink', created.get('id', 'unknown'))}"
-            )
+            print_success(f"Event created: {data.get('html_link', data.get('id', 'unknown'))}")
 
     @group.command("list")
     @json_option
     @click.pass_context
     def list_command(ctx: click.Context, json_output: bool | None) -> None:
-        service = _calendar_service()
-        calendars = service.calendarList().list().execute().get("items", [])
-        data = [
-            {
-                "id": item.get("id"),
-                "summary": item.get("summary"),
-                "primary": bool(item.get("primary")),
-            }
-            for item in calendars
-        ]
+        data = list_calendars()
         if use_json_output(ctx, json_output):
             print_json(data)
         else:

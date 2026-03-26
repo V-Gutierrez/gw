@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,21 +10,39 @@ from typing import Any
 
 def _detect_timezone() -> str:
     """Auto-detect system timezone, fallback to UTC."""
+    env_timezone = os.environ.get("TZ")
+    if env_timezone and "/" in env_timezone:
+        return env_timezone
+
+    localtime = Path("/etc/localtime")
+    try:
+        resolved = localtime.resolve()
+        parts = resolved.parts
+        if "zoneinfo" in parts:
+            zoneinfo_index = parts.index("zoneinfo")
+            detected = "/".join(parts[zoneinfo_index + 1 :])
+            if "/" in detected:
+                return detected
+    except OSError:
+        pass
+
     try:
         from datetime import datetime, timezone
+
         local_tz = datetime.now(timezone.utc).astimezone().tzinfo
         tz_name = str(local_tz)
-        if tz_name and tz_name != "UTC" and len(tz_name) > 2:
+        if tz_name and "/" in tz_name:
             return tz_name
     except Exception:
         pass
+
     try:
-        import time
-        if hasattr(time, 'tzname') and time.tzname[0]:
+        if hasattr(time, "tzname") and time.tzname[0] and "/" in time.tzname[0]:
             return time.tzname[0]
     except Exception:
         pass
-    return "UTC"
+
+    return "America/Sao_Paulo"
 
 
 def get_config_dir() -> Path:
@@ -48,7 +67,7 @@ def _default_path(filename: str) -> str:
 
 
 DEFAULTS: dict[str, Any] = {
-    "timezone": "auto",
+    "timezone": "America/Sao_Paulo",
     "default_calendar": "primary",
     "credentials_path": _default_path("credentials.json"),
     "token_path": _default_path("token.json"),

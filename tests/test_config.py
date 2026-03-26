@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from gw.config import GWConfig, load_config, DEFAULTS
 
@@ -64,3 +65,10 @@ def test_custom_credentials_path(tmp_path: Path):
     config_file.write_text('credentials_path = "/tmp/my-creds.json"\n')
     cfg = load_config(config_file)
     assert cfg.credentials == Path("/tmp/my-creds.json")
+
+
+@patch("gw.config.Path.resolve")
+def test_detect_timezone_from_zoneinfo_path(mock_resolve):
+    mock_resolve.return_value = Path("/usr/share/zoneinfo/America/Manaus")
+    cfg = GWConfig(timezone="auto")
+    assert cfg.timezone == "America/Manaus"

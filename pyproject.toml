@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gw-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "Google Workspace CLI – calendar, gmail, drive, sheets, docs from your terminal"
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,10 +25,11 @@ dependencies = [
     "google-auth>=2.0",
     "google-auth-oauthlib>=1.0",
     "google-api-python-client>=2.0",
+    "mcp>=1.26.0",
 ]
 
 [project.scripts]
-gw = "gw.cli:main"
+gw = "gw.cli:run_cli"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "ruff>=0.4"]

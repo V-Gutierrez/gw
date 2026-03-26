@@ -1,15 +1,28 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from click.testing import CliRunner
 from unittest.mock import MagicMock, patch
 
-from gw.cli import main
+from gw.cli import main, run_cli
+from gw.errors import EXIT_AUTH, EXIT_CONFIG, EXIT_GENERAL, GwConfigError
 
 
 runner = CliRunner()
 
-EXPECTED_SUBGROUPS = ["auth", "calendar", "config", "docs", "drive", "gmail", "sheets"]
+EXPECTED_SUBGROUPS = [
+    "auth",
+    "calendar",
+    "completion",
+    "config",
+    "docs",
+    "doctor",
+    "drive",
+    "gmail",
+    "mcp",
+    "sheets",
+]
 
 
 def _mock_execute(payload):
@@ -42,7 +55,7 @@ def test_root_help_lists_all_subgroups():
 def test_version_flag():
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "0.1.0" in result.output
+    assert "0.2.0" in result.output
 
 
 def test_config_show():
@@ -68,6 +81,84 @@ def test_config_path_json():
     result = runner.invoke(main, ["--json", "config", "path"])
     assert result.exit_code == 0
     assert '"config_path"' in result.output
+
+
+def test_completion_bash():
+    result = runner.invoke(main, ["completion", "bash"])
+    assert result.exit_code == 0
+    assert "_GW_COMPLETE" in result.output
+
+
+def test_completion_zsh():
+    result = runner.invoke(main, ["completion", "zsh"])
+    assert result.exit_code == 0
+    assert "_GW_COMPLETE" in result.output
+
+
+def test_completion_fish():
+    result = runner.invoke(main, ["completion", "fish"])
+    assert result.exit_code == 0
+    assert "_GW_COMPLETE" in result.output
+
+
+def test_mcp_subgroup_help():
+    result = runner.invoke(main, ["mcp", "--help"])
+    assert result.exit_code == 0
+
+
+@patch("gw.cli.run_mcp_server")
+def test_mcp_serve_command(mock_run_mcp_server: MagicMock):
+    result = runner.invoke(main, ["mcp", "serve"])
+    assert result.exit_code == 0
+    mock_run_mcp_server.assert_called_once()
+
+
+@patch("gw.doctor.credential_status")
+def test_doctor_human_output(mock_status: MagicMock):
+    mock_status.return_value = {
+        "authenticated": True,
+        "token_path": "/tmp/token.json",
+        "credentials_path": "/tmp/credentials.json",
+        "expiry": None,
+        "scopes": [],
+    }
+    with runner.isolated_filesystem():
+        Path("credentials.json").write_text("{}")
+        Path("token.json").write_text("{}")
+        with patch("gw.cli.load_runtime_config") as mock_config:
+            cfg = MagicMock()
+            cfg.credentials = Path("credentials.json")
+            cfg.token = Path("token.json")
+            cfg.timezone = "America/Sao_Paulo"
+            mock_config.return_value = cfg
+            result = runner.invoke(main, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "gw doctor" in result.output
+    assert "authentication" in result.output
+
+
+@patch("gw.doctor.credential_status")
+def test_doctor_json_output(mock_status: MagicMock):
+    mock_status.return_value = {
+        "authenticated": False,
+        "token_path": "/tmp/token.json",
+        "credentials_path": "/tmp/credentials.json",
+        "expiry": None,
+        "scopes": [],
+    }
+    with patch("gw.cli.load_runtime_config") as mock_config:
+        cfg = MagicMock()
+        cfg.credentials = Path("/tmp/missing-credentials.json")
+        cfg.token = Path("/tmp/missing-token.json")
+        cfg.timezone = "America/Sao_Paulo"
+        mock_config.return_value = cfg
+        result = runner.invoke(main, ["doctor", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["ok"] is False
+    assert any(check["name"] == "authentication" for check in data["checks"])
 
 
 def test_calendar_subgroup_help():
@@ -215,3 +306,40 @@ def test_docs_list_json(mock_build_service: MagicMock):
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data[0]["id"] == "doc-1"
+
+
+@patch("gw.services.gmail.build_service")
+def test_run_cli_maps_auth_errors_to_code_2_json(mock_build_service: MagicMock, capsys):
+    mock_build_service.side_effect = Exception("should be patched directly")
+
+    with patch(
+        "gw.services.gmail.build_service",
+        side_effect=__import__("gw.errors", fromlist=["GwAuthError"]).GwAuthError(
+            "Not authenticated. Run `gw auth login` first."
+        ),
+    ):
+        exit_code = run_cli(["--json", "gmail", "list"])
+
+    captured = capsys.readouterr()
+    assert exit_code == EXIT_AUTH
+    assert json.loads(captured.err) == {
+        "error": "Not authenticated. Run `gw auth login` first.",
+        "code": 2,
+    }
+
+
+def test_run_cli_maps_usage_errors_to_code_1(capsys):
+    exit_code = run_cli(["--not-a-real-option"])
+
+    captured = capsys.readouterr()
+    assert exit_code == EXIT_GENERAL
+    assert "No such option" in captured.err
+
+
+def test_run_cli_maps_config_errors_to_code_3_json(capsys):
+    with patch("gw.cli.load_runtime_config", side_effect=GwConfigError("broken config")):
+        exit_code = run_cli(["--json", "config", "show"])
+
+    captured = capsys.readouterr()
+    assert exit_code == EXIT_CONFIG
+    assert json.loads(captured.err) == {"error": "broken config", "code": 3}

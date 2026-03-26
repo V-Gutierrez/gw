@@ -15,11 +15,15 @@ After that:
 
 ```bash
 gw auth login
+gw auth login --headless
+gw auth setup
 gw auth status
 gw auth logout
+gw doctor
 ```
 
 Tokens are stored as JSON at `~/.config/gw/token.json` and refreshed automatically.
+Headless login prints an authorization URL and prompts for the code instead of opening a browser.
 
 ## Configuration
 
@@ -44,6 +48,10 @@ gw config path
 
 ```bash
 gw --help
+gw completion zsh
+gw completion bash
+gw completion fish
+
 gw calendar today
 gw calendar today --all --json
 gw calendar create "Standup" "2026-03-26T10:00" "2026-03-26T10:30"
@@ -60,7 +68,50 @@ gw sheets read SPREADSHEET_ID "Sheet1!A1:C5"
 gw docs list
 gw docs read DOCUMENT_ID
 gw docs export DOCUMENT_ID --format txt
+
+gw mcp serve
 ```
+
+## Onboarding and Health Checks
+
+```bash
+gw auth setup
+gw auth setup --headless
+gw doctor
+gw doctor --json
+```
+
+`gw auth setup` guides you through creating or importing OAuth credentials and then logs in.
+`gw doctor` reports the state of credentials, token, authentication, and timezone configuration.
+
+## Shell Completion
+
+```bash
+eval "$(gw completion zsh)"
+eval "$(gw completion bash)"
+gw completion fish | source
+```
+
+## MCP Server
+
+`gw mcp serve` starts a stdio Model Context Protocol server for AI agents.
+
+Exposed tools:
+
+- `gmail_send`, `gmail_reply`, `gmail_forward`, `gmail_list`, `gmail_read`
+- `calendar_today`, `calendar_tomorrow`, `calendar_week`, `calendar_create`, `calendar_list`
+- `drive_list`
+- `sheets_read`
+- `docs_read`, `docs_export`, `docs_list`
+
+## Exit Codes
+
+- `0` success
+- `1` general or usage error
+- `2` auth failure
+- `3` config failure
+
+When `--json` is enabled, errors are emitted as JSON with the shape `{"error": "message", "code": N}`.
 
 ## Development
 

@@ -1,7 +1,9 @@
 """Allow running gw as `python -m gw`."""
 
-from gw.cli import main_group
+import sys
+
+from gw.cli import run_cli
 
 
 if __name__ == "__main__":
-    main_group(prog_name="gw")
+    sys.exit(run_cli())
