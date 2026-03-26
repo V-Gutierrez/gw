@@ -69,3 +69,20 @@ pip install -e ".[dev]"
 pytest
 ruff check .
 ```
+
+## OAuth Scopes
+
+gw requests the following Google API scopes during `gw auth login`:
+
+| Scope | Why |
+|-------|-----|
+| `gmail.send` | Send emails, reply, forward |
+| `gmail.modify` | Read, list, and search emails |
+| `calendar` | Read and create calendar events |
+| `drive.readonly` | List Drive files |
+| `spreadsheets.readonly` | Read Sheets data |
+| `documents.readonly` | Read and export Docs |
+| `contacts.readonly` | Search contacts (planned) |
+| `userinfo.email` | Identify authenticated account |
+
+All scopes are the minimum required for each feature. You can review the exact scope list in `src/gw/auth.py`.

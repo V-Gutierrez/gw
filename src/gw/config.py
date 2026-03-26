@@ -29,7 +29,7 @@ def _default_path(filename: str) -> str:
 
 
 DEFAULTS: dict[str, Any] = {
-    "timezone": "America/Sao_Paulo",
+    "timezone": "UTC",
     "default_calendar": "primary",
     "credentials_path": _default_path("credentials.json"),
     "token_path": _default_path("token.json"),
