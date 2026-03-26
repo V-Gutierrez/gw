@@ -7,6 +7,25 @@ from pathlib import Path
 from typing import Any
 
 
+def _detect_timezone() -> str:
+    """Auto-detect system timezone, fallback to UTC."""
+    try:
+        from datetime import datetime, timezone
+        local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+        tz_name = str(local_tz)
+        if tz_name and tz_name != "UTC" and len(tz_name) > 2:
+            return tz_name
+    except Exception:
+        pass
+    try:
+        import time
+        if hasattr(time, 'tzname') and time.tzname[0]:
+            return time.tzname[0]
+    except Exception:
+        pass
+    return "UTC"
+
+
 def get_config_dir() -> Path:
     xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
     if xdg_config_home:
@@ -29,7 +48,7 @@ def _default_path(filename: str) -> str:
 
 
 DEFAULTS: dict[str, Any] = {
-    "timezone": "UTC",
+    "timezone": "auto",
     "default_calendar": "primary",
     "credentials_path": _default_path("credentials.json"),
     "token_path": _default_path("token.json"),
@@ -43,6 +62,10 @@ class GWConfig:
     credentials_path: str = DEFAULTS["credentials_path"]
     token_path: str = DEFAULTS["token_path"]
     _extra: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.timezone == "auto":
+            self.timezone = _detect_timezone()
 
     @property
     def credentials(self) -> Path:
