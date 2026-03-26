@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.env
+.env.*
+credentials.json
+client_secret*.json
+token.json
+*.pickle
+pyrightconfig.json
