@@ -4,12 +4,13 @@ from typing import Any
 
 import click
 
-from gw.auth import build_service
+from gw.auth import build_service, execute_google_request
+from gw.config import GWConfig
 from gw.output import json_option, print_human, print_json, use_json_output
 
 
-def _contacts_service():
-    return build_service("people", "v1")
+def _contacts_service(config: GWConfig | None = None):
+    return build_service("people", "v1", config=config)
 
 
 def _person_to_contact(person: dict[str, Any]) -> dict[str, Any]:
@@ -24,26 +25,28 @@ def _person_to_contact(person: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def search_contacts(query: str, max_results: int = 10) -> list[dict[str, Any]]:
-    service = _contacts_service()
-    service.people().searchContacts(
-        query="", readMask="names,emailAddresses,phoneNumbers"
-    ).execute()
-    response = (
-        service.people()
-        .searchContacts(
+def search_contacts(
+    query: str,
+    max_results: int = 10,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    service = _contacts_service(config)
+    execute_google_request(
+        service.people().searchContacts(query="", readMask="names,emailAddresses,phoneNumbers")
+    )
+    response = execute_google_request(
+        service.people().searchContacts(
             query=query,
             readMask="names,emailAddresses,phoneNumbers",
             pageSize=max_results,
         )
-        .execute()
     )
     return [_person_to_contact(item.get("person", {})) for item in response.get("results", [])]
 
 
-def list_contacts(max_results: int = 100) -> list[dict[str, Any]]:
-    service = _contacts_service()
-    response = (
+def list_contacts(max_results: int = 100, config: GWConfig | None = None) -> list[dict[str, Any]]:
+    service = _contacts_service(config)
+    response = execute_google_request(
         service.people()
         .connections()
         .list(
@@ -51,7 +54,6 @@ def list_contacts(max_results: int = 100) -> list[dict[str, Any]]:
             personFields="names,emailAddresses,phoneNumbers",
             pageSize=max_results,
         )
-        .execute()
     )
     return [_person_to_contact(person) for person in response.get("connections", [])]
 
@@ -78,7 +80,7 @@ def register_contacts_commands(group: click.Group) -> None:
     def search_command(
         ctx: click.Context, query: str, max_results: int, json_output: bool | None
     ) -> None:
-        contacts = search_contacts(query=query, max_results=max_results)
+        contacts = search_contacts(query=query, max_results=max_results, config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(contacts)
         else:
@@ -89,7 +91,7 @@ def register_contacts_commands(group: click.Group) -> None:
     @json_option
     @click.pass_context
     def list_command(ctx: click.Context, max_results: int, json_output: bool | None) -> None:
-        contacts = list_contacts(max_results=max_results)
+        contacts = list_contacts(max_results=max_results, config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(contacts)
         else:

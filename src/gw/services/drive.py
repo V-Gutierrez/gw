@@ -8,7 +8,8 @@ from typing import Any
 import click
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
-from gw.auth import build_service
+from gw.auth import build_service, execute_google_request
+from gw.config import GWConfig
 from gw.output import json_option, print_human, print_json, print_success, use_json_output
 from gw.utils import atomic_write
 
@@ -27,8 +28,8 @@ NATIVE_EXPORT_MIME_TYPES = {
 }
 
 
-def _drive_service():
-    return build_service("drive", "v3")
+def _drive_service(config: GWConfig | None = None):
+    return build_service("drive", "v3", config=config)
 
 
 def _download_request_bytes(request: Any) -> bytes:
@@ -48,37 +49,42 @@ def _default_download_path(name: str, export_format: str | None) -> Path:
     return Path(f"{name}.{export_format}")
 
 
-def list_drive_files(max_results: int = 10) -> list[dict[str, Any]]:
-    service = _drive_service()
-    return (
-        service.files()
-        .list(
+def list_drive_files(
+    max_results: int = 10, config: GWConfig | None = None
+) -> list[dict[str, Any]]:
+    service = _drive_service(config)
+    response = execute_google_request(
+        service.files().list(
             pageSize=max_results,
             orderBy="modifiedTime desc",
             fields="files(id, name, mimeType, modifiedTime)",
         )
-        .execute()
-        .get("files", [])
     )
+    return response.get("files", [])
 
 
-def search_drive_files(query: str, max_results: int = 10) -> list[dict[str, Any]]:
-    service = _drive_service()
-    return (
-        service.files()
-        .list(
+def search_drive_files(
+    query: str,
+    max_results: int = 10,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    service = _drive_service(config)
+    response = execute_google_request(
+        service.files().list(
             q=query,
             pageSize=max_results,
             orderBy="modifiedTime desc",
             fields="files(id, name, mimeType, modifiedTime)",
         )
-        .execute()
-        .get("files", [])
     )
+    return response.get("files", [])
 
 
 def upload_drive_file(
-    file_path: str, name: str | None = None, folder_id: str | None = None
+    file_path: str,
+    name: str | None = None,
+    folder_id: str | None = None,
+    config: GWConfig | None = None,
 ) -> dict[str, Any]:
     source = Path(file_path).expanduser()
     if not source.exists() or not source.is_file():
@@ -89,15 +95,13 @@ def upload_drive_file(
     if folder_id:
         metadata["parents"] = [folder_id]
 
-    service = _drive_service()
-    uploaded = (
-        service.files()
-        .create(
+    service = _drive_service(config)
+    uploaded = execute_google_request(
+        service.files().create(
             body=metadata,
             media_body=MediaFileUpload(str(source), mimetype=mime_type),
             fields="id,name,mimeType,webViewLink",
         )
-        .execute()
     )
     return {
         "id": uploaded.get("id"),
@@ -108,10 +112,15 @@ def upload_drive_file(
 
 
 def download_drive_file(
-    file_id: str, output_path: str | None = None, export_format: str | None = None
+    file_id: str,
+    output_path: str | None = None,
+    export_format: str | None = None,
+    config: GWConfig | None = None,
 ) -> dict[str, Any]:
-    service = _drive_service()
-    metadata = service.files().get(fileId=file_id, fields="id,name,mimeType,size").execute()
+    service = _drive_service(config)
+    metadata = execute_google_request(
+        service.files().get(fileId=file_id, fields="id,name,mimeType,size")
+    )
     name = metadata.get("name", file_id)
     mime_type = metadata.get("mimeType", "application/octet-stream")
     export_map = NATIVE_EXPORT_MIME_TYPES.get(mime_type)
@@ -157,7 +166,7 @@ def register_drive_commands(group: click.Group) -> None:
     @json_option
     @click.pass_context
     def list_command(ctx: click.Context, max_results: int, json_output: bool | None) -> None:
-        files = list_drive_files(max_results=max_results)
+        files = list_drive_files(max_results=max_results, config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(files)
         else:
@@ -178,7 +187,7 @@ def register_drive_commands(group: click.Group) -> None:
     def search_command(
         ctx: click.Context, query: str, max_results: int, json_output: bool | None
     ) -> None:
-        files = search_drive_files(query=query, max_results=max_results)
+        files = search_drive_files(query=query, max_results=max_results, config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(files)
         else:
@@ -203,7 +212,12 @@ def register_drive_commands(group: click.Group) -> None:
         folder_id: str | None,
         json_output: bool | None,
     ) -> None:
-        data = upload_drive_file(file_path=file_path, name=name, folder_id=folder_id)
+        data = upload_drive_file(
+            file_path=file_path,
+            name=name,
+            folder_id=folder_id,
+            config=ctx.obj["config"],
+        )
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
@@ -228,6 +242,7 @@ def register_drive_commands(group: click.Group) -> None:
             file_id=file_id,
             output_path=output_path,
             export_format=export_format,
+            config=ctx.obj["config"],
         )
         if use_json_output(ctx, json_output):
             print_json(data)

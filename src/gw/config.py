@@ -71,15 +71,18 @@ DEFAULTS: dict[str, Any] = {
     "default_calendar": "primary",
     "credentials_path": _default_path("credentials.json"),
     "token_path": _default_path("token.json"),
+    "timeout_seconds": 30,
 }
 
 
 @dataclass
 class GWConfig:
+    profile: str | None = None
     timezone: str = DEFAULTS["timezone"]
     default_calendar: str = DEFAULTS["default_calendar"]
     credentials_path: str = DEFAULTS["credentials_path"]
     token_path: str = DEFAULTS["token_path"]
+    timeout_seconds: int = DEFAULTS["timeout_seconds"]
     _extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -95,31 +98,80 @@ class GWConfig:
         return Path(self.token_path).expanduser()
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "timezone": self.timezone,
             "default_calendar": self.default_calendar,
             "credentials_path": self.credentials_path,
             "token_path": self.token_path,
+            "timeout_seconds": self.timeout_seconds,
             **self._extra,
         }
+        if self.profile is not None:
+            data["profile"] = self.profile
+        return data
 
 
-def load_config(path: Path | None = None) -> GWConfig:
+def _profile_token_path(token_path: str, profile: str) -> str:
+    path = Path(token_path)
+    suffix = "".join(path.suffixes)
+    base_name = path.name[: -len(suffix)] if suffix else path.name
+    profile_name = f"{base_name}-{profile}{suffix}"
+    return str(path.with_name(profile_name))
+
+
+def _parse_known_values(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    known_keys = {
+        "timezone",
+        "default_calendar",
+        "credentials_path",
+        "token_path",
+        "timeout_seconds",
+    }
+    known = {key: value for key, value in data.items() if key in known_keys}
+    extra = {key: value for key, value in data.items() if key not in known_keys}
+
+    string_keys = {"timezone", "default_calendar", "credentials_path", "token_path"}
+    for key in string_keys:
+        if key in known and not isinstance(known[key], str):
+            raise ValueError(f"Config value {key!r} must be a string.")
+
+    if "timeout_seconds" in known:
+        timeout_value = known["timeout_seconds"]
+        if not isinstance(timeout_value, int) or timeout_value <= 0:
+            raise ValueError("Config value 'timeout_seconds' must be a positive integer.")
+
+    return known, extra
+
+
+def load_config(path: Path | None = None, profile: str | None = None) -> GWConfig:
     path = path or get_config_path()
     if not path.exists():
-        return GWConfig()
+        defaults = dict(DEFAULTS)
+        if profile is not None:
+            defaults["token_path"] = _profile_token_path(str(defaults["token_path"]), profile)
+        return GWConfig(profile=profile, **defaults)
 
     raw = path.read_text(encoding="utf-8")
     data = tomllib.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("Config file must contain a TOML object.")
 
-    known_keys = {"timezone", "default_calendar", "credentials_path", "token_path"}
-    known = {k: v for k, v in data.items() if k in known_keys}
-    extra = {k: v for k, v in data.items() if k not in known_keys}
+    known, extra = _parse_known_values(data)
 
-    for key, value in known.items():
-        if not isinstance(value, str):
-            raise ValueError(f"Config value {key!r} must be a string.")
+    selected_profile: dict[str, Any] = {}
+    if profile is not None:
+        profiles = data.get("profiles", {})
+        if not isinstance(profiles, dict):
+            raise ValueError("Config value 'profiles' must be a TOML table.")
+        if profile in profiles:
+            selected_profile = profiles[profile]
+            if not isinstance(selected_profile, dict):
+                raise ValueError(f"Profile {profile!r} must be a TOML table.")
 
-    return GWConfig(**known, _extra=extra)
+    profile_known, profile_extra = _parse_known_values(selected_profile)
+    merged = {**DEFAULTS, **known, **profile_known}
+
+    if profile is not None and "token_path" not in profile_known:
+        merged["token_path"] = _profile_token_path(str(merged["token_path"]), profile)
+
+    return GWConfig(profile=profile, **merged, _extra={**extra, **profile_extra})

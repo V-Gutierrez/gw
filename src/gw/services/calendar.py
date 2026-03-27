@@ -1,26 +1,39 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import click
 
-from gw.auth import build_service
+from gw.auth import build_service, execute_google_request
+from gw.config import GWConfig
 from gw.output import json_option, print_human, print_json, print_success, use_json_output
-from gw.utils import date_range_today, date_range_week, format_event_time, parse_date, to_rfc3339
+from gw.utils import (
+    date_range_days,
+    date_range_today,
+    date_range_week,
+    format_event_time,
+    now_in_tz,
+    parse_date,
+    to_rfc3339,
+)
 
 
-def _calendar_service():
-    return build_service("calendar", "v3")
+def _calendar_service(config: GWConfig | None = None):
+    return build_service("calendar", "v3", config=config)
 
 
 def _fetch_events(
-    start: str, end: str, all_calendars: bool, default_calendar: str
+    start: str,
+    end: str,
+    all_calendars: bool,
+    default_calendar: str,
+    config: GWConfig | None = None,
 ) -> list[dict[str, Any]]:
-    service = _calendar_service()
+    service = _calendar_service(config)
     calendars: list[dict[str, Any]]
     if all_calendars:
-        calendars = service.calendarList().list().execute().get("items", [])
+        calendars = execute_google_request(service.calendarList().list()).get("items", [])
     else:
         calendars = [
             {
@@ -32,16 +45,14 @@ def _fetch_events(
 
     items: list[dict[str, Any]] = []
     for calendar in calendars:
-        response = (
-            service.events()
-            .list(
+        response = execute_google_request(
+            service.events().list(
                 calendarId=calendar["id"],
                 timeMin=start,
                 timeMax=end,
                 singleEvents=True,
                 orderBy="startTime",
             )
-            .execute()
         )
         for event in response.get("items", []):
             items.append(
@@ -55,7 +66,21 @@ def _fetch_events(
                     "html_link": event.get("htmlLink"),
                 }
             )
+    items.sort(key=_event_sort_key)
     return items
+
+
+def _event_sort_key(event: dict[str, Any]) -> tuple[datetime, str]:
+    start_data = event.get("start", {})
+    value = start_data.get("dateTime") or start_data.get("date")
+    if not value:
+        return (datetime.max, event.get("id") or "")
+
+    if "dateTime" in start_data:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        parsed = datetime.fromisoformat(f"{value}T00:00:00")
+    return (parsed, event.get("id") or "")
 
 
 def _print_events(events: list[dict[str, Any]], label: str, include_calendar: bool) -> None:
@@ -69,28 +94,89 @@ def _print_events(events: list[dict[str, Any]], label: str, include_calendar: bo
 
 
 def get_calendar_today(
-    timezone: str, default_calendar: str, all_calendars: bool = False
+    timezone: str,
+    default_calendar: str,
+    all_calendars: bool = False,
+    config: GWConfig | None = None,
 ) -> list[dict[str, Any]]:
     start, end = date_range_today(timezone)
-    return _fetch_events(to_rfc3339(start), to_rfc3339(end), all_calendars, default_calendar)
+    return _fetch_events(
+        to_rfc3339(start), to_rfc3339(end), all_calendars, default_calendar, config=config
+    )
 
 
 def get_calendar_tomorrow(
     timezone: str,
     default_calendar: str,
     all_calendars: bool = False,
+    config: GWConfig | None = None,
 ) -> list[dict[str, Any]]:
     start, end = date_range_today(timezone)
     start += timedelta(days=1)
     end += timedelta(days=1)
-    return _fetch_events(to_rfc3339(start), to_rfc3339(end), all_calendars, default_calendar)
+    return _fetch_events(
+        to_rfc3339(start), to_rfc3339(end), all_calendars, default_calendar, config=config
+    )
 
 
 def get_calendar_week(
-    timezone: str, default_calendar: str, all_calendars: bool = False
+    timezone: str,
+    default_calendar: str,
+    all_calendars: bool = False,
+    config: GWConfig | None = None,
 ) -> list[dict[str, Any]]:
     start, end = date_range_week(timezone)
-    return _fetch_events(to_rfc3339(start), to_rfc3339(end), all_calendars, default_calendar)
+    return _fetch_events(
+        to_rfc3339(start), to_rfc3339(end), all_calendars, default_calendar, config=config
+    )
+
+
+def get_calendar_agenda(
+    timezone: str,
+    default_calendar: str,
+    days: int = 7,
+    all_calendars: bool = False,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    if days < 1:
+        raise click.ClickException("--days must be greater than or equal to 1.")
+    start, end = date_range_days(timezone, days)
+    return _fetch_events(
+        to_rfc3339(start),
+        to_rfc3339(end),
+        all_calendars,
+        default_calendar,
+        config=config,
+    )
+
+
+def get_calendar_next(
+    timezone: str,
+    default_calendar: str,
+    all_calendars: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any] | None:
+    events = get_calendar_agenda(
+        timezone,
+        default_calendar,
+        days=30,
+        all_calendars=all_calendars,
+        config=config,
+    )
+    now = now_in_tz(timezone)
+    for event in events:
+        start_data = event.get("start", {})
+        if "dateTime" in start_data:
+            start = datetime.fromisoformat(start_data["dateTime"].replace("Z", "+00:00"))
+            if start >= now:
+                return event
+        elif "date" in start_data:
+            start = datetime.fromisoformat(f"{start_data['date']}T00:00:00").replace(
+                tzinfo=now.tzinfo
+            )
+            if start >= now.replace(hour=0, minute=0, second=0, microsecond=0):
+                return event
+    return None
 
 
 def create_calendar_event(
@@ -104,8 +190,9 @@ def create_calendar_event(
     recurrence: tuple[str, ...] = (),
     calendar_id: str | None = None,
     reminder: int | None = None,
+    config: GWConfig | None = None,
 ) -> dict[str, Any]:
-    service = _calendar_service()
+    service = _calendar_service(config)
     target_calendar = calendar_id or default_calendar
     start_dt = parse_date(start, timezone)
     end_dt = parse_date(end, timezone)
@@ -133,7 +220,9 @@ def create_calendar_event(
             "overrides": [{"method": "popup", "minutes": reminder}],
         }
 
-    created = service.events().insert(calendarId=target_calendar, body=event).execute()
+    created = execute_google_request(
+        service.events().insert(calendarId=target_calendar, body=event)
+    )
     return {
         "id": created.get("id"),
         "html_link": created.get("htmlLink"),
@@ -141,9 +230,9 @@ def create_calendar_event(
     }
 
 
-def list_calendars() -> list[dict[str, Any]]:
-    service = _calendar_service()
-    calendars = service.calendarList().list().execute().get("items", [])
+def list_calendars(config: GWConfig | None = None) -> list[dict[str, Any]]:
+    service = _calendar_service(config)
+    calendars = execute_google_request(service.calendarList().list()).get("items", [])
     return [
         {
             "id": item.get("id"),
@@ -155,11 +244,14 @@ def list_calendars() -> list[dict[str, Any]]:
 
 
 def delete_calendar_event(
-    event_id: str, default_calendar: str, calendar_id: str | None = None
+    event_id: str,
+    default_calendar: str,
+    calendar_id: str | None = None,
+    config: GWConfig | None = None,
 ) -> dict[str, Any]:
-    service = _calendar_service()
+    service = _calendar_service(config)
     target_calendar = calendar_id or default_calendar
-    service.events().delete(calendarId=target_calendar, eventId=event_id).execute()
+    execute_google_request(service.events().delete(calendarId=target_calendar, eventId=event_id))
     return {"deleted": True, "event_id": event_id, "calendar": target_calendar}
 
 
@@ -172,6 +264,7 @@ def update_calendar_event(
     start: str | None = None,
     end: str | None = None,
     description: str | None = None,
+    config: GWConfig | None = None,
 ) -> dict[str, Any]:
     if (start is None) != (end is None):
         raise click.ClickException("Provide both --start and --end together.")
@@ -190,10 +283,10 @@ def update_calendar_event(
     if not patch:
         raise click.ClickException("Provide at least one field to update.")
 
-    service = _calendar_service()
+    service = _calendar_service(config)
     target_calendar = calendar_id or default_calendar
-    updated = (
-        service.events().patch(calendarId=target_calendar, eventId=event_id, body=patch).execute()
+    updated = execute_google_request(
+        service.events().patch(calendarId=target_calendar, eventId=event_id, body=patch)
     )
     return {
         "id": updated.get("id", event_id),
@@ -210,7 +303,12 @@ def register_calendar_commands(group: click.Group) -> None:
     @click.pass_context
     def today_command(ctx: click.Context, all_calendars: bool, json_output: bool | None) -> None:
         config = ctx.obj["config"]
-        events = get_calendar_today(config.timezone, config.default_calendar, all_calendars)
+        events = get_calendar_today(
+            config.timezone,
+            config.default_calendar,
+            all_calendars,
+            config=config,
+        )
         if use_json_output(ctx, json_output):
             print_json(events)
         else:
@@ -224,7 +322,12 @@ def register_calendar_commands(group: click.Group) -> None:
         ctx: click.Context, all_calendars: bool, json_output: bool | None
     ) -> None:
         config = ctx.obj["config"]
-        events = get_calendar_tomorrow(config.timezone, config.default_calendar, all_calendars)
+        events = get_calendar_tomorrow(
+            config.timezone,
+            config.default_calendar,
+            all_calendars,
+            config=config,
+        )
         if use_json_output(ctx, json_output):
             print_json(events)
         else:
@@ -236,11 +339,59 @@ def register_calendar_commands(group: click.Group) -> None:
     @click.pass_context
     def week_command(ctx: click.Context, all_calendars: bool, json_output: bool | None) -> None:
         config = ctx.obj["config"]
-        events = get_calendar_week(config.timezone, config.default_calendar, all_calendars)
+        events = get_calendar_week(
+            config.timezone,
+            config.default_calendar,
+            all_calendars,
+            config=config,
+        )
         if use_json_output(ctx, json_output):
             print_json(events)
         else:
             _print_events(events, "This week's events", all_calendars)
+
+    @group.command("agenda")
+    @click.option("--days", default=7, type=int, show_default=True, help="Number of days to show.")
+    @click.option("--all", "all_calendars", is_flag=True, help="Include all calendars.")
+    @json_option
+    @click.pass_context
+    def agenda_command(
+        ctx: click.Context,
+        days: int,
+        all_calendars: bool,
+        json_output: bool | None,
+    ) -> None:
+        config = ctx.obj["config"]
+        events = get_calendar_agenda(
+            config.timezone,
+            config.default_calendar,
+            days=days,
+            all_calendars=all_calendars,
+            config=config,
+        )
+        if use_json_output(ctx, json_output):
+            print_json(events)
+        else:
+            _print_events(events, f"Next {days} day(s)", all_calendars)
+
+    @group.command("next")
+    @click.option("--all", "all_calendars", is_flag=True, help="Include all calendars.")
+    @json_option
+    @click.pass_context
+    def next_command(ctx: click.Context, all_calendars: bool, json_output: bool | None) -> None:
+        config = ctx.obj["config"]
+        event = get_calendar_next(
+            config.timezone,
+            config.default_calendar,
+            all_calendars=all_calendars,
+            config=config,
+        )
+        if use_json_output(ctx, json_output):
+            print_json(event)
+        elif event is None:
+            print_human("No upcoming events.", emoji="📅")
+        else:
+            _print_events([event], "Next event", all_calendars)
 
     @group.command("create")
     @click.argument("title")
@@ -277,6 +428,7 @@ def register_calendar_commands(group: click.Group) -> None:
             recurrence=recurrence,
             calendar_id=calendar_id,
             reminder=reminder,
+            config=config,
         )
         if use_json_output(ctx, json_output):
             print_json(data)
@@ -287,7 +439,7 @@ def register_calendar_commands(group: click.Group) -> None:
     @json_option
     @click.pass_context
     def list_command(ctx: click.Context, json_output: bool | None) -> None:
-        data = list_calendars()
+        data = list_calendars(config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
@@ -310,6 +462,7 @@ def register_calendar_commands(group: click.Group) -> None:
             event_id=event_id,
             default_calendar=config.default_calendar,
             calendar_id=calendar_id,
+            config=config,
         )
         if use_json_output(ctx, json_output):
             print_json(data)
@@ -345,6 +498,7 @@ def register_calendar_commands(group: click.Group) -> None:
             start=start,
             end=end,
             description=description,
+            config=config,
         )
         if use_json_output(ctx, json_output):
             print_json(data)

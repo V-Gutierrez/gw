@@ -21,12 +21,18 @@
 
 Every Google Workspace tool is either calendar-only, admin-only, or abandoned. No single CLI covers Gmail + Calendar + Contacts + Drive + Sheets + Docs with permanent OAuth.
 
-`gw` fixes that. Login once, use forever. No re-auth, no token expiry, no config files to manage.
+`gw` fixes that. Login once, use forever. No re-auth loops, first-class JSON output, and profile-aware config when you need multiple accounts.
 
 ## Install
 
 ```bash
 pip install -e ".[dev]"
+```
+
+For a minimal runtime-only install:
+
+```bash
+pip install -e .
 ```
 
 ## Authentication
@@ -36,6 +42,7 @@ After that:
 
 ```bash
 gw auth login
+gw auth login --profile work
 gw auth login --headless
 gw auth setup
 gw auth status
@@ -43,7 +50,7 @@ gw auth logout
 gw doctor
 ```
 
-Tokens are stored as JSON at `~/.config/gw/token.json` and refreshed automatically.
+Tokens are stored as JSON at `~/.config/gw/token.json` by default, or `token-{profile}.json` when you pass `--profile PROFILE`.
 Headless login prints an authorization URL and prompts for the code instead of opening a browser.
 
 If you used `gw` before v0.3.0, run `gw auth logout && gw auth login` after upgrading so your token picks up the new Drive and Sheets write scopes.
@@ -57,6 +64,13 @@ timezone = "America/Sao_Paulo"
 default_calendar = "primary"
 credentials_path = "~/.config/gw/credentials.json"
 token_path = "~/.config/gw/token.json"
+timeout_seconds = 30
+
+[profiles.work]
+credentials_path = "~/.config/gw/work-credentials.json"
+
+[profiles.personal]
+timezone = "Europe/London"
 ```
 
 Inspect the active config with:
@@ -65,17 +79,21 @@ Inspect the active config with:
 gw config show
 gw config show --json
 gw config path
+gw --profile work config show --json
 ```
 
 ## Usage
 
 ```bash
 gw --help
+gw --profile work --help
 gw completion zsh
 gw completion bash
 gw completion fish
 
 gw calendar today
+gw calendar agenda --days 7
+gw calendar next --json
 gw calendar today --all --json
 gw calendar create "Standup" "2026-03-26T10:00" "2026-03-26T10:30"
 gw calendar update EVENT_ID --title "Rescheduled standup" --start "2026-03-26T11:00" --end "2026-03-26T11:30"
@@ -87,6 +105,11 @@ gw contacts search "alice"
 gw contacts list --max 20 --json
 
 gw gmail list --max 5
+gw gmail search "from:alice@example.com newer_than:7d"
+gw gmail thread 18c0ffee --json
+gw gmail count --query "is:unread"
+gw gmail mark-read 18c0ffee
+gw gmail mark-unread 18c0ffee --json
 gw gmail list --query "from:alice@example.com" --json
 gw gmail read 18c0ffee
 gw gmail send "alice@example.com" "Subject" "Hello"
@@ -138,8 +161,8 @@ gw completion fish | source
 
 Exposed tools:
 
-- `gmail_send`, `gmail_reply`, `gmail_forward`, `gmail_list`, `gmail_read`, `gmail_trash`, `gmail_archive`, `gmail_label`, `gmail_star`
-- `calendar_today`, `calendar_tomorrow`, `calendar_week`, `calendar_create`, `calendar_list`, `calendar_delete`, `calendar_update`
+- `gmail_send`, `gmail_reply`, `gmail_forward`, `gmail_list`, `gmail_search`, `gmail_thread`, `gmail_count`, `gmail_read`, `gmail_trash`, `gmail_archive`, `gmail_label`, `gmail_star`, `gmail_mark_read`, `gmail_mark_unread`
+- `calendar_today`, `calendar_tomorrow`, `calendar_week`, `calendar_agenda`, `calendar_next`, `calendar_create`, `calendar_list`, `calendar_delete`, `calendar_update`
 - `contacts_search`, `contacts_list`
 - `drive_list`, `drive_search`, `drive_upload`, `drive_download`
 - `sheets_read`, `sheets_write`

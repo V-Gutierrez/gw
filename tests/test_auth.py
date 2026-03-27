@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import json
+import httplib2
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 import click
 from click.testing import CliRunner
+from google.auth.exceptions import RefreshError, TransportError
+from googleapiclient.errors import HttpError
 
 from gw.auth import (
     DEFAULT_SCOPES,
     build_service,
+    execute_google_request,
     load_credentials,
     login,
     logout,
@@ -18,6 +23,7 @@ from gw.auth import (
     save_credentials,
     setup_auth,
 )
+from gw.config import GWConfig
 from gw.errors import GwAuthError, GwConfigError
 
 
@@ -64,6 +70,7 @@ def _patch_config(token_path: Path, secrets_path: Path):
     mock_cfg = MagicMock()
     mock_cfg.token = token_path
     mock_cfg.credentials = secrets_path
+    mock_cfg.timeout_seconds = 30
     with patch("gw.auth._get_config", return_value=mock_cfg):
         yield mock_cfg
 
@@ -236,10 +243,24 @@ class TestLogout:
 class TestBuildService:
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.build")
-    def test_builds_with_given_creds(self, mock_build: MagicMock) -> None:
+    @patch("gw.auth.AuthorizedHttp")
+    @patch("gw.auth.httplib2.Http")
+    def test_builds_with_given_creds(
+        self,
+        mock_http_cls: MagicMock,
+        mock_authorized_http: MagicMock,
+        mock_build: MagicMock,
+    ) -> None:
         creds = _make_creds(valid=True)
         build_service("gmail", "v1", credentials=creds)
-        mock_build.assert_called_once_with("gmail", "v1", credentials=creds)
+        mock_http_cls.assert_called_once_with(timeout=30)
+        mock_authorized_http.assert_called_once_with(creds, http=mock_http_cls.return_value)
+        mock_build.assert_called_once_with(
+            "gmail",
+            "v1",
+            http=mock_authorized_http.return_value,
+            cache_discovery=False,
+        )
 
     @pytest.mark.usefixtures("_patch_config")
     def test_raises_when_not_authenticated(self, token_path: Path) -> None:
@@ -253,12 +274,72 @@ class TestBuildService:
         with pytest.raises(GwConfigError, match="Credentials file not found"):
             login(token_path=token_path, client_secrets=missing)
 
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.build")
+    @patch("gw.auth.AuthorizedHttp")
+    @patch("gw.auth.httplib2.Http")
+    def test_build_service_uses_config_timeout(
+        self,
+        mock_http_cls: MagicMock,
+        mock_authorized_http: MagicMock,
+        mock_build: MagicMock,
+    ) -> None:
+        creds = _make_creds(valid=True)
+        cfg = GWConfig(token_path="/tmp/token.json", timeout_seconds=12)
+
+        build_service("drive", "v3", credentials=creds, config=cfg)
+
+        mock_http_cls.assert_called_once_with(timeout=12)
+
+
+class TestExecuteGoogleRequest:
+    def test_executes_request_once_without_error(self) -> None:
+        request = MagicMock()
+        request.execute.return_value = {"ok": True}
+
+        result = execute_google_request(request)
+
+        assert result == {"ok": True}
+        request.execute.assert_called_once_with(num_retries=0)
+
+    @patch("gw.auth.time.sleep")
+    def test_retries_transport_error(self, mock_sleep: MagicMock) -> None:
+        request = MagicMock()
+        request.execute.side_effect = [TransportError("temporary"), {"ok": True}]
+
+        result = execute_google_request(request)
+
+        assert result == {"ok": True}
+        assert request.execute.call_count == 2
+        mock_sleep.assert_called_once_with(1.0)
+
+    @patch("gw.auth.time.sleep")
+    def test_respects_retry_after_header(self, mock_sleep: MagicMock) -> None:
+        request = MagicMock()
+        response = httplib2.Response({"status": "429", "retry-after": "4"})
+        http_error = HttpError(
+            response,
+            b'{"error": {"errors": [{"reason": "rateLimitExceeded"}], "message": "rate limited"}}',
+        )
+        request.execute.side_effect = [http_error, {"ok": True}]
+
+        result = execute_google_request(request)
+
+        assert result == {"ok": True}
+        mock_sleep.assert_called_once_with(4.0)
+
+    def test_raises_auth_error_on_refresh_failure(self) -> None:
+        request = MagicMock()
+        request.execute.side_effect = RefreshError("revoked")
+
+        with pytest.raises(GwAuthError, match="Authentication refresh failed"):
+            execute_google_request(request)
+
 
 class TestSetupAuth:
-    @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.login")
     def test_uses_existing_credentials_and_runs_login(
-        self, mock_login: MagicMock, secrets_path: Path
+        self, mock_login: MagicMock, secrets_path: Path, _patch_config: MagicMock
     ) -> None:
         creds = _make_creds(valid=True)
         creds.expiry = None
@@ -269,9 +350,8 @@ class TestSetupAuth:
 
         assert result["authenticated"] is True
         assert result["headless"] is True
-        mock_login.assert_called_once_with(headless=True)
+        mock_login.assert_called_once_with(headless=True, config=_patch_config)
 
-    @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.login")
     @patch("gw.auth.click.prompt")
     @patch("gw.auth.click.confirm", return_value=False)
@@ -281,6 +361,7 @@ class TestSetupAuth:
         mock_prompt: MagicMock,
         mock_login: MagicMock,
         token_path: Path,
+        _patch_config: MagicMock,
     ) -> None:
         credentials_path = token_path.parent / "client_secret.json"
         if credentials_path.exists():
@@ -301,9 +382,8 @@ class TestSetupAuth:
         mock_confirm.assert_called_once_with(
             "Do you want to use an existing credentials.json file?", default=True
         )
-        mock_login.assert_called_once_with(headless=False)
+        mock_login.assert_called_once_with(headless=False, config=_patch_config)
 
-    @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.login")
     @patch("gw.auth.click.prompt", return_value="/tmp/credentials.json")
     @patch("gw.auth.click.confirm", return_value=True)
@@ -314,6 +394,7 @@ class TestSetupAuth:
         mock_login: MagicMock,
         token_path: Path,
         tmp_path: Path,
+        _patch_config: MagicMock,
     ) -> None:
         credentials_path = token_path.parent / "client_secret.json"
         if credentials_path.exists():
@@ -336,7 +417,27 @@ class TestSetupAuth:
             "Do you want to use an existing credentials.json file?", default=True
         )
         mock_prompt.assert_called_once_with("Path to credentials.json", type=str)
-        mock_login.assert_called_once_with(headless=True)
+        mock_login.assert_called_once_with(headless=True, config=_patch_config)
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.login")
+    def test_setup_auth_passes_explicit_config(
+        self, mock_login: MagicMock, token_path: Path
+    ) -> None:
+        cfg = GWConfig(
+            credentials_path=str(token_path.parent / "client_secret.json"),
+            token_path=str(token_path),
+            timeout_seconds=30,
+        )
+        cfg.credentials.write_text(json.dumps(FAKE_CLIENT_SECRETS))
+        creds = _make_creds(valid=True)
+        creds.expiry = None
+        creds.scopes = DEFAULT_SCOPES
+        mock_login.return_value = creds
+
+        setup_auth(config=cfg)
+
+        mock_login.assert_called_once_with(headless=False, config=cfg)
 
 
 class TestCLICommands:
@@ -353,37 +454,59 @@ class TestCLICommands:
         register_auth_commands(auth)
         return auth
 
+    @pytest.fixture()
+    def auth_config(self, token_path: Path, secrets_path: Path) -> GWConfig:
+        return GWConfig(
+            credentials_path=str(secrets_path),
+            token_path=str(token_path),
+            timeout_seconds=30,
+        )
+
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.login")
-    def test_login_command(self, mock_login: MagicMock, runner: CliRunner, auth_group) -> None:
+    def test_login_command(
+        self,
+        mock_login: MagicMock,
+        runner: CliRunner,
+        auth_group,
+        auth_config: SimpleNamespace,
+    ) -> None:
         mock_login.return_value = _make_creds(valid=True)
 
-        result = runner.invoke(auth_group, ["login"])
+        result = runner.invoke(auth_group, ["login"], obj={"config": auth_config})
 
         assert result.exit_code == 0
         assert "Authenticated" in result.output
-        mock_login.assert_called_once()
+        mock_login.assert_called_once_with(headless=False, config=auth_config)
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.login")
     def test_login_command_headless(
-        self, mock_login: MagicMock, runner: CliRunner, auth_group
+        self,
+        mock_login: MagicMock,
+        runner: CliRunner,
+        auth_group,
+        auth_config: SimpleNamespace,
     ) -> None:
         mock_login.return_value = _make_creds(valid=True)
 
-        result = runner.invoke(auth_group, ["login", "--headless"])
+        result = runner.invoke(auth_group, ["login", "--headless"], obj={"config": auth_config})
 
         assert result.exit_code == 0
-        mock_login.assert_called_once_with(headless=True)
+        mock_login.assert_called_once_with(headless=True, config=auth_config)
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.load_credentials")
     def test_status_authenticated(
-        self, mock_load: MagicMock, runner: CliRunner, auth_group
+        self,
+        mock_load: MagicMock,
+        runner: CliRunner,
+        auth_group,
+        auth_config: SimpleNamespace,
     ) -> None:
         mock_load.return_value = _make_creds(valid=True)
 
-        result = runner.invoke(auth_group, ["status"])
+        result = runner.invoke(auth_group, ["status"], obj={"config": auth_config})
 
         assert result.exit_code == 0
         assert "Authenticated" in result.output
@@ -391,44 +514,69 @@ class TestCLICommands:
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.load_credentials")
     def test_status_unauthenticated(
-        self, mock_load: MagicMock, runner: CliRunner, auth_group
+        self,
+        mock_load: MagicMock,
+        runner: CliRunner,
+        auth_group,
+        auth_config: SimpleNamespace,
     ) -> None:
         mock_load.return_value = None
 
-        result = runner.invoke(auth_group, ["status"])
+        result = runner.invoke(auth_group, ["status"], obj={"config": auth_config})
 
         assert result.exit_code == 0
         assert "Not authenticated" in result.output
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.logout")
-    def test_logout_command(self, mock_logout: MagicMock, runner: CliRunner, auth_group) -> None:
+    def test_logout_command(
+        self,
+        mock_logout: MagicMock,
+        runner: CliRunner,
+        auth_group,
+        auth_config: SimpleNamespace,
+    ) -> None:
         mock_logout.return_value = True
 
-        result = runner.invoke(auth_group, ["logout"])
+        result = runner.invoke(auth_group, ["logout"], obj={"config": auth_config})
 
         assert result.exit_code == 0
         assert "Logged out" in result.output
+        mock_logout.assert_called_once_with(config=auth_config)
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.logout")
     def test_logout_no_session(
-        self, mock_logout: MagicMock, runner: CliRunner, auth_group
+        self,
+        mock_logout: MagicMock,
+        runner: CliRunner,
+        auth_group,
+        auth_config: SimpleNamespace,
     ) -> None:
         mock_logout.return_value = False
 
-        result = runner.invoke(auth_group, ["logout"])
+        result = runner.invoke(auth_group, ["logout"], obj={"config": auth_config})
 
         assert result.exit_code == 0
         assert "No active session" in result.output
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.setup_auth")
-    def test_setup_command(self, mock_setup: MagicMock, runner: CliRunner, auth_group) -> None:
+    def test_setup_command(
+        self,
+        mock_setup: MagicMock,
+        runner: CliRunner,
+        auth_group,
+        auth_config: SimpleNamespace,
+    ) -> None:
         mock_setup.return_value = {"authenticated": True, "headless": True}
 
-        result = runner.invoke(auth_group, ["setup", "--headless", "--json"])
+        result = runner.invoke(
+            auth_group,
+            ["setup", "--headless", "--json"],
+            obj={"config": auth_config},
+        )
 
         assert result.exit_code == 0
         assert json.loads(result.output)["authenticated"] is True
-        mock_setup.assert_called_once_with(login_headless=True)
+        mock_setup.assert_called_once_with(login_headless=True, config=auth_config)

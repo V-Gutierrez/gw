@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.0 (2026-03-27)
+
+### Features
+- Retry-aware Google API execution with exponential backoff, 429 Retry-After support, and a 30-second configurable HTTP timeout
+- `gw gmail search/thread/count/mark-read/mark-unread` for query-first search, full thread inspection, mailbox counts, and unread state management
+- `gw calendar agenda --days N` and `gw calendar next` for short-horizon planning and next-event lookup
+- Multi-profile foundation with `--profile`, `token-{profile}.json` storage, and `[profiles.<name>]` overrides in `config.toml`
+- MCP server tools expanded to mirror the new Gmail and Calendar commands while honoring the active runtime config
+
+### Notes
+- Existing single-profile configs remain backward-compatible; omitting `--profile` keeps using `token.json`
+- JSON errors still use the shape `{"error": "message", "code": N}` when `--json` is enabled
+
 ## v0.3.0 (2026-03-26)
 
 ### Features

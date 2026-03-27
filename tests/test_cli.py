@@ -47,6 +47,11 @@ def test_root_help_shows_json_option():
     assert "--json" in result.output
 
 
+def test_root_help_shows_profile_option():
+    result = runner.invoke(main, ["--help"])
+    assert "--profile" in result.output
+
+
 def test_root_help_lists_all_subgroups():
     result = runner.invoke(main, ["--help"])
     for name in EXPECTED_SUBGROUPS:
@@ -56,7 +61,7 @@ def test_root_help_lists_all_subgroups():
 def test_version_flag():
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "0.3.0" in result.output
+    assert "0.4.0" in result.output
 
 
 def test_config_show():
@@ -84,6 +89,18 @@ def test_config_path_json():
     assert '"config_path"' in result.output
 
 
+def test_profile_flag_passed_to_runtime_config():
+    with patch("gw.cli.load_runtime_config") as mock_config:
+        cfg = MagicMock()
+        cfg.as_dict.return_value = {"profile": "work"}
+        mock_config.return_value = cfg
+
+        result = runner.invoke(main, ["--profile", "work", "config", "show", "--json"])
+
+    assert result.exit_code == 0
+    mock_config.assert_called_once_with(profile="work")
+
+
 def test_completion_bash():
     result = runner.invoke(main, ["completion", "bash"])
     assert result.exit_code == 0
@@ -108,10 +125,12 @@ def test_mcp_subgroup_help():
 
 
 @patch("gw.cli.run_mcp_server")
-def test_mcp_serve_command(mock_run_mcp_server: MagicMock):
+@patch("gw.cli.set_mcp_config")
+def test_mcp_serve_command(mock_set_mcp_config: MagicMock, mock_run_mcp_server: MagicMock):
     result = runner.invoke(main, ["mcp", "serve"])
     assert result.exit_code == 0
     mock_run_mcp_server.assert_called_once()
+    mock_set_mcp_config.assert_called_once()
 
 
 @patch("gw.doctor.credential_status")
@@ -357,6 +376,96 @@ def test_gmail_list_json(mock_build_service: MagicMock):
 
 
 @patch("gw.services.gmail.build_service")
+def test_gmail_search_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.messages.return_value.list.return_value = _mock_execute(
+        {"messages": [{"id": "abc", "threadId": "thr"}]}
+    )
+    service.users.return_value.messages.return_value.get.return_value = _mock_execute(
+        {
+            "id": "abc",
+            "threadId": "thr",
+            "snippet": "Preview text",
+            "labelIds": [],
+            "payload": {
+                "headers": [
+                    {"name": "Subject", "value": "Hello"},
+                    {"name": "From", "value": "alice@example.com"},
+                    {"name": "Date", "value": "Thu, 26 Mar 2026 10:00:00 +0000"},
+                ]
+            },
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["gmail", "search", "from:alice@example.com", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data[0]["id"] == "abc"
+
+
+@patch("gw.services.gmail.build_service")
+def test_gmail_thread_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.messages.return_value.get.return_value = _mock_execute(
+        {
+            "id": "abc",
+            "threadId": "thr",
+            "payload": {
+                "headers": [
+                    {"name": "Subject", "value": "Seed"},
+                    {"name": "From", "value": "alice@example.com"},
+                    {"name": "Date", "value": "Thu, 26 Mar 2026 10:00:00 +0000"},
+                ]
+            },
+        }
+    )
+    service.users.return_value.threads.return_value.get.return_value = _mock_execute(
+        {
+            "messages": [
+                {
+                    "id": "abc",
+                    "threadId": "thr",
+                    "payload": {
+                        "mimeType": "text/plain",
+                        "body": {"data": "SGVsbG8="},
+                        "headers": [
+                            {"name": "Subject", "value": "Hello"},
+                            {"name": "From", "value": "alice@example.com"},
+                            {"name": "Date", "value": "Thu, 26 Mar 2026 10:00:00 +0000"},
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["gmail", "thread", "abc", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["thread_id"] == "thr"
+    assert data["message_count"] == 1
+
+
+@patch("gw.services.gmail.build_service")
+def test_gmail_count_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.messages.return_value.list.return_value = _mock_execute(
+        {"resultSizeEstimate": 7}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["gmail", "count", "--query", "is:unread", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data == {"query": "is:unread", "count": 7}
+
+
+@patch("gw.services.gmail.build_service")
 def test_gmail_trash_json(mock_build_service: MagicMock):
     service = MagicMock()
     service.users.return_value.messages.return_value.trash.return_value = _mock_execute(
@@ -421,6 +530,86 @@ def test_gmail_star_json(mock_build_service: MagicMock):
     data = json.loads(result.output)
     assert data["starred"] is True
     assert data["id"] == "abc"
+
+
+@patch("gw.services.gmail.build_service")
+def test_gmail_mark_read_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.messages.return_value.modify.return_value = _mock_execute(
+        {"id": "abc", "threadId": "thr", "labelIds": []}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["gmail", "mark-read", "abc", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["read"] is True
+
+
+@patch("gw.services.gmail.build_service")
+def test_gmail_mark_unread_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.messages.return_value.modify.return_value = _mock_execute(
+        {"id": "abc", "threadId": "thr", "labelIds": ["UNREAD"]}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["gmail", "mark-unread", "abc", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["read"] is False
+
+
+@patch("gw.services.calendar.build_service")
+def test_calendar_agenda_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.events.return_value.list.return_value = _mock_execute(
+        {
+            "items": [
+                {
+                    "id": "evt-1",
+                    "summary": "Standup",
+                    "start": {"dateTime": "2026-03-27T10:00:00+00:00"},
+                    "end": {"dateTime": "2026-03-27T10:30:00+00:00"},
+                    "htmlLink": "https://calendar/event/evt-1",
+                }
+            ]
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["calendar", "agenda", "--days", "7", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data[0]["id"] == "evt-1"
+
+
+@patch("gw.services.calendar.build_service")
+def test_calendar_next_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.events.return_value.list.return_value = _mock_execute(
+        {
+            "items": [
+                {
+                    "id": "evt-2",
+                    "summary": "Next meeting",
+                    "start": {"dateTime": "2999-03-27T10:00:00+00:00"},
+                    "end": {"dateTime": "2999-03-27T10:30:00+00:00"},
+                    "htmlLink": "https://calendar/event/evt-2",
+                }
+            ]
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["calendar", "next", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["id"] == "evt-2"
 
 
 @patch("gw.services.drive.build_service")

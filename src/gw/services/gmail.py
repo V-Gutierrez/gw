@@ -6,13 +6,14 @@ from typing import Any
 
 import click
 
-from gw.auth import build_service
+from gw.auth import build_service, execute_google_request
+from gw.config import GWConfig
 from gw.output import json_option, print_human, print_json, print_success, use_json_output
 from gw.utils import clean_message_body, extract_message_body, header_map, parse_after_flag
 
 
-def _gmail_service():
-    return build_service("gmail", "v1")
+def _gmail_service(config: GWConfig | None = None):
+    return build_service("gmail", "v1", config=config)
 
 
 def _message_headers(message: dict[str, Any]) -> dict[str, str]:
@@ -38,14 +39,52 @@ def _render_list(messages: list[dict[str, Any]]) -> None:
         print_human(f"    Preview: {message['snippet']}")
 
 
+def _render_thread(thread: dict[str, Any]) -> None:
+    messages = thread.get("messages", [])
+    if not messages:
+        print_human("Thread is empty.", emoji="📧")
+        return
+
+    print_human(
+        f"Thread {thread['thread_id']} ({thread['message_count']} messages):",
+        emoji="📧",
+    )
+    for message in messages:
+        print_human(f"  • {message['date']}")
+        print_human(f"    ID: {message['id']}")
+        print_human(f"    From: {message['from']}")
+        print_human(f"    Subject: {message['subject']}")
+        print_human(f"    Body: {message['body']}")
+
+
+def _modify_gmail_labels(
+    message_id: str,
+    *,
+    add_labels: list[str],
+    remove_labels: list[str],
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _gmail_service(config)
+    return execute_google_request(
+        service.users()
+        .messages()
+        .modify(
+            userId="me",
+            id=message_id,
+            body={"addLabelIds": add_labels, "removeLabelIds": remove_labels},
+        )
+    )
+
+
 def send_gmail_message(
     to: str,
     subject: str,
     body: str,
     cc: str | None = None,
     bcc: str | None = None,
+    config: GWConfig | None = None,
 ) -> dict[str, Any]:
-    service = _gmail_service()
+    service = _gmail_service(config)
     message = MIMEText(body)
     message["To"] = to
     message["Subject"] = subject
@@ -54,18 +93,19 @@ def send_gmail_message(
     if bcc:
         message["Bcc"] = bcc
 
-    sent = (
-        service.users()
-        .messages()
-        .send(userId="me", body={"raw": _encode_message(message)})
-        .execute()
+    sent = execute_google_request(
+        service.users().messages().send(userId="me", body={"raw": _encode_message(message)})
     )
     return {"id": sent.get("id"), "to": to, "subject": subject}
 
 
-def reply_to_gmail_message(message_id: str, body: str) -> dict[str, Any]:
-    service = _gmail_service()
-    original = (
+def reply_to_gmail_message(
+    message_id: str,
+    body: str,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _gmail_service(config)
+    original = execute_google_request(
         service.users()
         .messages()
         .get(
@@ -74,7 +114,6 @@ def reply_to_gmail_message(message_id: str, body: str) -> dict[str, Any]:
             format="metadata",
             metadataHeaders=["Message-ID", "Subject", "From", "To", "References"],
         )
-        .execute()
     )
     headers = _message_headers(original)
     subject = headers.get("subject", "")
@@ -87,21 +126,26 @@ def reply_to_gmail_message(message_id: str, body: str) -> dict[str, Any]:
         message["In-Reply-To"] = headers["message-id"]
         message["References"] = headers.get("references", headers["message-id"])
 
-    sent = (
+    sent = execute_google_request(
         service.users()
         .messages()
         .send(
             userId="me",
             body={"raw": _encode_message(message), "threadId": original.get("threadId")},
         )
-        .execute()
     )
     return {"id": sent.get("id"), "thread_id": original.get("threadId")}
 
 
-def forward_gmail_message(message_id: str, to: str) -> dict[str, Any]:
-    service = _gmail_service()
-    original = service.users().messages().get(userId="me", id=message_id, format="full").execute()
+def forward_gmail_message(
+    message_id: str,
+    to: str,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _gmail_service(config)
+    original = execute_google_request(
+        service.users().messages().get(userId="me", id=message_id, format="full")
+    )
     headers = _message_headers(original)
     body = clean_message_body(extract_message_body(original.get("payload")))
     forwarded_body = (
@@ -115,11 +159,8 @@ def forward_gmail_message(message_id: str, to: str) -> dict[str, Any]:
     message = MIMEText(forwarded_body)
     message["To"] = to
     message["Subject"] = f"Fwd: {headers.get('subject', '')}"
-    sent = (
-        service.users()
-        .messages()
-        .send(userId="me", body={"raw": _encode_message(message)})
-        .execute()
+    sent = execute_google_request(
+        service.users().messages().send(userId="me", body={"raw": _encode_message(message)})
     )
     return {"id": sent.get("id"), "to": to}
 
@@ -129,8 +170,9 @@ def list_gmail_messages(
     query: str | None = None,
     unread: bool = False,
     after: str | None = None,
+    config: GWConfig | None = None,
 ) -> list[dict[str, Any]]:
-    service = _gmail_service()
+    service = _gmail_service(config)
     parts = []
     if query:
         parts.append(query)
@@ -140,15 +182,12 @@ def list_gmail_messages(
         parts.append("is:unread")
     final_query = " ".join(parts) or None
 
-    response = (
-        service.users()
-        .messages()
-        .list(userId="me", maxResults=max_results, q=final_query)
-        .execute()
+    response = execute_google_request(
+        service.users().messages().list(userId="me", maxResults=max_results, q=final_query)
     )
     messages: list[dict[str, Any]] = []
     for item in response.get("messages", []):
-        message = (
+        message = execute_google_request(
             service.users()
             .messages()
             .get(
@@ -157,7 +196,6 @@ def list_gmail_messages(
                 format="metadata",
                 metadataHeaders=["Subject", "From", "Date"],
             )
-            .execute()
         )
         headers = _message_headers(message)
         messages.append(
@@ -178,24 +216,25 @@ def read_gmail_messages(
     message_id: str | None = None,
     query: str | None = None,
     max_results: int = 1,
+    config: GWConfig | None = None,
 ) -> list[dict[str, Any]]:
     if not message_id and not query:
         raise click.ClickException("Provide a message ID or use --query.")
 
-    service = _gmail_service()
+    service = _gmail_service(config)
     ids: list[str]
     if message_id:
         ids = [message_id]
     else:
-        response = (
-            service.users().messages().list(userId="me", maxResults=max_results, q=query).execute()
+        response = execute_google_request(
+            service.users().messages().list(userId="me", maxResults=max_results, q=query)
         )
         ids = [item["id"] for item in response.get("messages", [])]
 
     messages: list[dict[str, Any]] = []
     for selected_id in ids:
-        message = (
-            service.users().messages().get(userId="me", id=selected_id, format="full").execute()
+        message = execute_google_request(
+            service.users().messages().get(userId="me", id=selected_id, format="full")
         )
         headers = _message_headers(message)
         body = clean_message_body(extract_message_body(message.get("payload")))
@@ -211,9 +250,100 @@ def read_gmail_messages(
     return messages
 
 
-def trash_gmail_message(message_id: str) -> dict[str, Any]:
-    service = _gmail_service()
-    message = service.users().messages().trash(userId="me", id=message_id).execute()
+def search_gmail_messages(
+    query: str,
+    max_results: int = 10,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    return list_gmail_messages(max_results=max_results, query=query, config=config)
+
+
+def get_gmail_thread(message_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = _gmail_service(config)
+    seed_message = execute_google_request(
+        service.users()
+        .messages()
+        .get(
+            userId="me",
+            id=message_id,
+            format="metadata",
+            metadataHeaders=["Subject", "From", "Date"],
+        )
+    )
+    thread_id = seed_message.get("threadId")
+    if not thread_id:
+        raise click.ClickException(f"Message {message_id!r} does not belong to a thread.")
+
+    thread = execute_google_request(
+        service.users().threads().get(userId="me", id=thread_id, format="full")
+    )
+    messages: list[dict[str, Any]] = []
+    for item in thread.get("messages", []):
+        headers = _message_headers(item)
+        body = clean_message_body(extract_message_body(item.get("payload")))
+        messages.append(
+            {
+                "id": item.get("id"),
+                "thread_id": item.get("threadId"),
+                "subject": headers.get("subject", ""),
+                "from": headers.get("from", ""),
+                "date": headers.get("date", ""),
+                "body": body or "(No plain text body — HTML only email)",
+            }
+        )
+
+    return {
+        "message_id": message_id,
+        "thread_id": thread_id,
+        "message_count": len(messages),
+        "messages": messages,
+    }
+
+
+def count_gmail_messages(
+    query: str | None = None,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _gmail_service(config)
+    response = execute_google_request(
+        service.users().messages().list(userId="me", maxResults=1, q=query)
+    )
+    return {"query": query, "count": response.get("resultSizeEstimate", 0)}
+
+
+def mark_gmail_read(message_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    message = _modify_gmail_labels(
+        message_id,
+        add_labels=[],
+        remove_labels=["UNREAD"],
+        config=config,
+    )
+    return {
+        "id": message.get("id", message_id),
+        "thread_id": message.get("threadId"),
+        "read": True,
+        "label_ids": message.get("labelIds", []),
+    }
+
+
+def mark_gmail_unread(message_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    message = _modify_gmail_labels(
+        message_id,
+        add_labels=["UNREAD"],
+        remove_labels=[],
+        config=config,
+    )
+    return {
+        "id": message.get("id", message_id),
+        "thread_id": message.get("threadId"),
+        "read": False,
+        "label_ids": message.get("labelIds", []),
+    }
+
+
+def trash_gmail_message(message_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = _gmail_service(config)
+    message = execute_google_request(service.users().messages().trash(userId="me", id=message_id))
     return {
         "id": message.get("id", message_id),
         "thread_id": message.get("threadId"),
@@ -221,13 +351,12 @@ def trash_gmail_message(message_id: str) -> dict[str, Any]:
     }
 
 
-def archive_gmail_message(message_id: str) -> dict[str, Any]:
-    service = _gmail_service()
-    message = (
-        service.users()
-        .messages()
-        .modify(userId="me", id=message_id, body={"removeLabelIds": ["INBOX"], "addLabelIds": []})
-        .execute()
+def archive_gmail_message(message_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    message = _modify_gmail_labels(
+        message_id,
+        add_labels=[],
+        remove_labels=["INBOX"],
+        config=config,
     )
     return {
         "id": message.get("id", message_id),
@@ -238,7 +367,7 @@ def archive_gmail_message(message_id: str) -> dict[str, Any]:
 
 
 def _resolve_label_id(service: Any, label_name: str) -> str:
-    labels = service.users().labels().list(userId="me").execute().get("labels", [])
+    labels = execute_google_request(service.users().labels().list(userId="me")).get("labels", [])
     for label in labels:
         if label.get("name") == label_name:
             resolved = label.get("id")
@@ -247,14 +376,20 @@ def _resolve_label_id(service: Any, label_name: str) -> str:
     raise click.ClickException(f"Label not found: {label_name}")
 
 
-def label_gmail_message(message_id: str, label_name: str, remove: bool = False) -> dict[str, Any]:
-    service = _gmail_service()
+def label_gmail_message(
+    message_id: str,
+    label_name: str,
+    remove: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _gmail_service(config)
     label_id = _resolve_label_id(service, label_name)
-    body = {
-        "addLabelIds": [] if remove else [label_id],
-        "removeLabelIds": [label_id] if remove else [],
-    }
-    message = service.users().messages().modify(userId="me", id=message_id, body=body).execute()
+    message = _modify_gmail_labels(
+        message_id,
+        add_labels=[] if remove else [label_id],
+        remove_labels=[label_id] if remove else [],
+        config=config,
+    )
     return {
         "id": message.get("id", message_id),
         "thread_id": message.get("threadId"),
@@ -264,13 +399,17 @@ def label_gmail_message(message_id: str, label_name: str, remove: bool = False) 
     }
 
 
-def star_gmail_message(message_id: str, remove: bool = False) -> dict[str, Any]:
-    service = _gmail_service()
-    body = {
-        "addLabelIds": [] if remove else ["STARRED"],
-        "removeLabelIds": ["STARRED"] if remove else [],
-    }
-    message = service.users().messages().modify(userId="me", id=message_id, body=body).execute()
+def star_gmail_message(
+    message_id: str,
+    remove: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    message = _modify_gmail_labels(
+        message_id,
+        add_labels=[] if remove else ["STARRED"],
+        remove_labels=["STARRED"] if remove else [],
+        config=config,
+    )
     return {
         "id": message.get("id", message_id),
         "thread_id": message.get("threadId"),
@@ -297,7 +436,8 @@ def register_gmail_commands(group: click.Group) -> None:
         bcc: str | None,
         json_output: bool | None,
     ) -> None:
-        data = send_gmail_message(to=to, subject=subject, body=body, cc=cc, bcc=bcc)
+        config = ctx.obj["config"]
+        data = send_gmail_message(to=to, subject=subject, body=body, cc=cc, bcc=bcc, config=config)
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
@@ -311,7 +451,7 @@ def register_gmail_commands(group: click.Group) -> None:
     def reply_command(
         ctx: click.Context, message_id: str, body: str, json_output: bool | None
     ) -> None:
-        data = reply_to_gmail_message(message_id=message_id, body=body)
+        data = reply_to_gmail_message(message_id=message_id, body=body, config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
@@ -325,7 +465,7 @@ def register_gmail_commands(group: click.Group) -> None:
     def forward_command(
         ctx: click.Context, message_id: str, to: str, json_output: bool | None
     ) -> None:
-        data = forward_gmail_message(message_id=message_id, to=to)
+        data = forward_gmail_message(message_id=message_id, to=to, config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
@@ -351,11 +491,53 @@ def register_gmail_commands(group: click.Group) -> None:
             query=query,
             unread=unread,
             after=after,
+            config=ctx.obj["config"],
         )
         if use_json_output(ctx, json_output):
             print_json(messages)
         else:
             _render_list(messages)
+
+    @group.command("search")
+    @click.argument("query")
+    @click.option("--max", "max_results", default=10, type=int, show_default=True)
+    @json_option
+    @click.pass_context
+    def search_command(
+        ctx: click.Context,
+        query: str,
+        max_results: int,
+        json_output: bool | None,
+    ) -> None:
+        messages = search_gmail_messages(
+            query=query, max_results=max_results, config=ctx.obj["config"]
+        )
+        if use_json_output(ctx, json_output):
+            print_json(messages)
+        else:
+            _render_list(messages)
+
+    @group.command("thread")
+    @click.argument("message_id")
+    @json_option
+    @click.pass_context
+    def thread_command(ctx: click.Context, message_id: str, json_output: bool | None) -> None:
+        thread = get_gmail_thread(message_id=message_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(thread)
+        else:
+            _render_thread(thread)
+
+    @group.command("count")
+    @click.option("--query", default=None, help="Raw Gmail search query.")
+    @json_option
+    @click.pass_context
+    def count_command(ctx: click.Context, query: str | None, json_output: bool | None) -> None:
+        data = count_gmail_messages(query=query, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_human(f"Count: {data['count']}", emoji="📧")
 
     @group.command("read")
     @click.argument("message_id", required=False)
@@ -370,7 +552,12 @@ def register_gmail_commands(group: click.Group) -> None:
         max_results: int,
         json_output: bool | None,
     ) -> None:
-        messages = read_gmail_messages(message_id=message_id, query=query, max_results=max_results)
+        messages = read_gmail_messages(
+            message_id=message_id,
+            query=query,
+            max_results=max_results,
+            config=ctx.obj["config"],
+        )
         if use_json_output(ctx, json_output):
             print_json(messages if query else messages[0])
         else:
@@ -386,7 +573,7 @@ def register_gmail_commands(group: click.Group) -> None:
     @json_option
     @click.pass_context
     def trash_command(ctx: click.Context, message_id: str, json_output: bool | None) -> None:
-        data = trash_gmail_message(message_id=message_id)
+        data = trash_gmail_message(message_id=message_id, config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
@@ -397,7 +584,7 @@ def register_gmail_commands(group: click.Group) -> None:
     @json_option
     @click.pass_context
     def archive_command(ctx: click.Context, message_id: str, json_output: bool | None) -> None:
-        data = archive_gmail_message(message_id=message_id)
+        data = archive_gmail_message(message_id=message_id, config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
@@ -416,7 +603,12 @@ def register_gmail_commands(group: click.Group) -> None:
         remove: bool,
         json_output: bool | None,
     ) -> None:
-        data = label_gmail_message(message_id=message_id, label_name=label_name, remove=remove)
+        data = label_gmail_message(
+            message_id=message_id,
+            label_name=label_name,
+            remove=remove,
+            config=ctx.obj["config"],
+        )
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
@@ -431,9 +623,31 @@ def register_gmail_commands(group: click.Group) -> None:
     def star_command(
         ctx: click.Context, message_id: str, remove: bool, json_output: bool | None
     ) -> None:
-        data = star_gmail_message(message_id=message_id, remove=remove)
+        data = star_gmail_message(message_id=message_id, remove=remove, config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
             action = "unstarred" if remove else "starred"
             print_success(f"Message {action}: {data['id']}")
+
+    @group.command("mark-read")
+    @click.argument("message_id")
+    @json_option
+    @click.pass_context
+    def mark_read_command(ctx: click.Context, message_id: str, json_output: bool | None) -> None:
+        data = mark_gmail_read(message_id=message_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Message marked as read: {data['id']}")
+
+    @group.command("mark-unread")
+    @click.argument("message_id")
+    @json_option
+    @click.pass_context
+    def mark_unread_command(ctx: click.Context, message_id: str, json_output: bool | None) -> None:
+        data = mark_gmail_unread(message_id=message_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Message marked as unread: {data['id']}")

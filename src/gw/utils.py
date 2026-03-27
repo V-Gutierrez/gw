@@ -51,6 +51,13 @@ def date_range_week(timezone: str = "UTC") -> tuple[datetime, datetime]:
     return start, end
 
 
+def date_range_days(timezone: str = "UTC", days: int = 7) -> tuple[datetime, datetime]:
+    today = now_in_tz(timezone)
+    start = today
+    end = end_of_day(today + timedelta(days=max(days - 1, 0)))
+    return start, end
+
+
 def to_rfc3339(dt: datetime) -> str:
     return dt.isoformat()
 

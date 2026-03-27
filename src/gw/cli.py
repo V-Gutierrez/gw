@@ -11,7 +11,7 @@ from gw.auth import register_auth_commands
 from gw.config import get_config_path, load_config
 from gw.doctor import doctor_command
 from gw.errors import EXIT_GENERAL, EXIT_SUCCESS, GwAuthError, GwConfigError, GwError
-from gw.mcp_server import run_mcp_server
+from gw.mcp_server import run_mcp_server, set_mcp_config
 from gw.output import json_option, print_human, print_json, render_error, use_json_output
 from gw.services.calendar import register_calendar_commands
 from gw.services.contacts import register_contacts_commands
@@ -21,9 +21,9 @@ from gw.services.gmail import register_gmail_commands
 from gw.services.sheets import register_sheets_commands
 
 
-def load_runtime_config():
+def load_runtime_config(profile: str | None = None):
     try:
-        return load_config()
+        return load_config(profile=profile)
     except ValueError as exc:
         raise GwConfigError(str(exc)) from exc
 
@@ -71,12 +71,14 @@ def run_cli(argv: Sequence[str] | None = None, *, prog_name: str = "gw") -> int:
 
 @click.group()
 @click.option("--json", "use_json", is_flag=True, default=False, help="Output as JSON.")
+@click.option("--profile", default=None, help="Use a named profile from config.toml.")
 @click.version_option(__version__, prog_name="gw")
 @click.pass_context
-def main(ctx: click.Context, use_json: bool) -> None:
+def main(ctx: click.Context, use_json: bool, profile: str | None) -> None:
     ctx.ensure_object(dict)
     ctx.obj["use_json"] = use_json
-    ctx.obj["config"] = load_runtime_config()
+    ctx.obj["profile"] = profile
+    ctx.obj["config"] = load_runtime_config(profile=profile)
 
 
 @click.group(name="config")
@@ -143,7 +145,9 @@ def mcp_group() -> None:
 
 
 @click.command(name="serve")
-def mcp_serve_command() -> None:
+@click.pass_context
+def mcp_serve_command(ctx: click.Context) -> None:
+    set_mcp_config(ctx.obj["config"])
     run_mcp_server()
 
 

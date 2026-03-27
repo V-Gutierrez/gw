@@ -5,7 +5,8 @@ from typing import Any
 
 import click
 
-from gw.auth import build_service
+from gw.auth import build_service, execute_google_request
+from gw.config import GWConfig
 from gw.output import json_option, print_human, print_json, print_success, use_json_output
 from gw.utils import atomic_write
 
@@ -32,9 +33,9 @@ def _extract_doc_text(document: dict[str, Any]) -> str:
     return "".join(parts).strip()
 
 
-def read_doc(document_id: str) -> dict[str, Any]:
-    service = build_service("docs", "v1")
-    document = service.documents().get(documentId=document_id).execute()
+def read_doc(document_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = build_service("docs", "v1", config=config)
+    document = execute_google_request(service.documents().get(documentId=document_id))
     return {
         "id": document_id,
         "title": document.get("title", "Untitled"),
@@ -43,7 +44,10 @@ def read_doc(document_id: str) -> dict[str, Any]:
 
 
 def export_doc(
-    document_id: str, export_format: str = "txt", output_path: str | None = None
+    document_id: str,
+    export_format: str = "txt",
+    output_path: str | None = None,
+    config: GWConfig | None = None,
 ) -> dict[str, Any]:
     mime_type = EXPORT_MIME_TYPES.get(export_format)
     if not mime_type:
@@ -51,8 +55,10 @@ def export_doc(
             f"Unsupported format: {export_format}. Supported: {', '.join(sorted(EXPORT_MIME_TYPES))}"
         )
 
-    service = build_service("drive", "v3")
-    data = service.files().export_media(fileId=document_id, mimeType=mime_type).execute()
+    service = build_service("drive", "v3", config=config)
+    data = execute_google_request(
+        service.files().export_media(fileId=document_id, mimeType=mime_type)
+    )
     if output_path:
         target = Path(output_path).expanduser()
         atomic_write(target, data)
@@ -65,19 +71,17 @@ def export_doc(
     raise click.ClickException("Binary exports require --out.")
 
 
-def list_docs(max_results: int = 10) -> list[dict[str, Any]]:
-    service = build_service("drive", "v3")
-    return (
-        service.files()
-        .list(
+def list_docs(max_results: int = 10, config: GWConfig | None = None) -> list[dict[str, Any]]:
+    service = build_service("drive", "v3", config=config)
+    response = execute_google_request(
+        service.files().list(
             q="mimeType='application/vnd.google-apps.document'",
             pageSize=max_results,
             orderBy="modifiedTime desc",
             fields="files(id, name, modifiedTime)",
         )
-        .execute()
-        .get("files", [])
     )
+    return response.get("files", [])
 
 
 def register_docs_commands(group: click.Group) -> None:
@@ -86,7 +90,7 @@ def register_docs_commands(group: click.Group) -> None:
     @json_option
     @click.pass_context
     def read_command(ctx: click.Context, document_id: str, json_output: bool | None) -> None:
-        data = read_doc(document_id=document_id)
+        data = read_doc(document_id=document_id, config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
@@ -108,7 +112,10 @@ def register_docs_commands(group: click.Group) -> None:
         json_output: bool | None,
     ) -> None:
         payload = export_doc(
-            document_id=document_id, export_format=export_format, output_path=output_path
+            document_id=document_id,
+            export_format=export_format,
+            output_path=output_path,
+            config=ctx.obj["config"],
         )
         if use_json_output(ctx, json_output):
             print_json(payload)
@@ -122,7 +129,7 @@ def register_docs_commands(group: click.Group) -> None:
     @json_option
     @click.pass_context
     def list_command(ctx: click.Context, max_results: int, json_output: bool | None) -> None:
-        files = list_docs(max_results=max_results)
+        files = list_docs(max_results=max_results, config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(files)
         else:

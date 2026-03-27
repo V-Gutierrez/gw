@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gw-cli"
-version = "0.3.0"
+version = "0.4.0"
 description = "Google Workspace CLI – calendar, gmail, drive, sheets, docs from your terminal"
 readme = "README.md"
 license = { text = "MIT" }

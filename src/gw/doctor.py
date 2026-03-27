@@ -10,7 +10,7 @@ from gw.output import print_human, print_json
 
 
 def run_doctor(config: GWConfig) -> dict[str, Any]:
-    status = credential_status()
+    status = credential_status(config=config)
     checks = [
         {
             "name": "credentials_file",

@@ -12,6 +12,7 @@ def test_defaults():
     assert cfg.default_calendar == "primary"
     assert cfg.credentials_path == "~/.config/gw/credentials.json"
     assert cfg.token_path == "~/.config/gw/token.json"
+    assert cfg.timeout_seconds == 30
 
 
 def test_path_expansion():
@@ -65,6 +66,69 @@ def test_custom_credentials_path(tmp_path: Path):
     config_file.write_text('credentials_path = "/tmp/my-creds.json"\n')
     cfg = load_config(config_file)
     assert cfg.credentials == Path("/tmp/my-creds.json")
+
+
+def test_load_profile_uses_profile_token_suffix(tmp_path: Path):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('timezone = "America/Manaus"\n')
+
+    cfg = load_config(config_file, profile="work")
+
+    assert cfg.profile == "work"
+    assert cfg.timezone == "America/Manaus"
+    assert cfg.token_path.endswith("token-work.json")
+
+
+def test_load_profile_merges_profile_table_overrides(tmp_path: Path):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        "\n".join(
+            [
+                'timezone = "America/Sao_Paulo"',
+                'token_path = "/tmp/base-token.json"',
+                "timeout_seconds = 45",
+                "",
+                "[profiles.work]",
+                'timezone = "Europe/London"',
+                'credentials_path = "/tmp/work-creds.json"',
+            ]
+        )
+    )
+
+    cfg = load_config(config_file, profile="work")
+
+    assert cfg.timezone == "Europe/London"
+    assert cfg.credentials_path == "/tmp/work-creds.json"
+    assert cfg.token_path == "/tmp/base-token-work.json"
+    assert cfg.timeout_seconds == 45
+
+
+def test_load_profile_respects_explicit_profile_token_path(tmp_path: Path):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        "\n".join(
+            [
+                "[profiles.work]",
+                'token_path = "/tmp/custom-work-token.json"',
+            ]
+        )
+    )
+
+    cfg = load_config(config_file, profile="work")
+
+    assert cfg.token_path == "/tmp/custom-work-token.json"
+
+
+def test_invalid_timeout_raises_value_error(tmp_path: Path):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("timeout_seconds = 0\n")
+
+    try:
+        load_config(config_file)
+    except ValueError as exc:
+        assert "timeout_seconds" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for invalid timeout_seconds")
 
 
 @patch("gw.config.Path.resolve")

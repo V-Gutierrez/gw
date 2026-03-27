@@ -3,27 +3,33 @@ from __future__ import annotations
 import click
 from typing import Any
 
-from gw.auth import build_service
+from gw.auth import build_service, execute_google_request
+from gw.config import GWConfig
 from gw.output import json_option, print_human, print_json, use_json_output
 
 
-def read_sheet_values(spreadsheet_id: str, range_name: str) -> dict[str, Any]:
-    service = build_service("sheets", "v4")
-    values = (
-        service.spreadsheets()
-        .values()
-        .get(spreadsheetId=spreadsheet_id, range=range_name)
-        .execute()
-        .get("values", [])
+def read_sheet_values(
+    spreadsheet_id: str,
+    range_name: str,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = build_service("sheets", "v4", config=config)
+    response = execute_google_request(
+        service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=range_name)
     )
+    values = response.get("values", [])
     return {"spreadsheet_id": spreadsheet_id, "range": range_name, "rows": values}
 
 
 def write_sheet_value(
-    spreadsheet_id: str, range_name: str, value: str, raw: bool = False
+    spreadsheet_id: str,
+    range_name: str,
+    value: str,
+    raw: bool = False,
+    config: GWConfig | None = None,
 ) -> dict[str, Any]:
-    service = build_service("sheets", "v4")
-    result = (
+    service = build_service("sheets", "v4", config=config)
+    result = execute_google_request(
         service.spreadsheets()
         .values()
         .update(
@@ -32,7 +38,6 @@ def write_sheet_value(
             valueInputOption="RAW" if raw else "USER_ENTERED",
             body={"values": [[value]]},
         )
-        .execute()
     )
     return {
         "spreadsheet_id": spreadsheet_id,
@@ -56,7 +61,11 @@ def register_sheets_commands(group: click.Group) -> None:
         range_name: str,
         json_output: bool | None,
     ) -> None:
-        data = read_sheet_values(spreadsheet_id=spreadsheet_id, range_name=range_name)
+        data = read_sheet_values(
+            spreadsheet_id=spreadsheet_id,
+            range_name=range_name,
+            config=ctx.obj["config"],
+        )
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
@@ -88,6 +97,7 @@ def register_sheets_commands(group: click.Group) -> None:
             range_name=range_name,
             value=value,
             raw=raw,
+            config=ctx.obj["config"],
         )
         if use_json_output(ctx, json_output):
             print_json(data)
