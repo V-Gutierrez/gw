@@ -89,7 +89,7 @@ def parse_after_flag(value: str) -> str:
 
     amount = int(amount_text)
     delta = timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
-    threshold = datetime.now() - delta
+    threshold = datetime.now(tz=ZoneInfo("UTC")) - delta
     return f"after:{threshold.strftime('%Y/%m/%d')}"
 
 

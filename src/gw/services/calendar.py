@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import click
@@ -74,12 +74,12 @@ def _event_sort_key(event: dict[str, Any]) -> tuple[datetime, str]:
     start_data = event.get("start", {})
     value = start_data.get("dateTime") or start_data.get("date")
     if not value:
-        return (datetime.max, event.get("id") or "")
+        return (datetime.max.replace(tzinfo=timezone.utc), event.get("id") or "")
 
     if "dateTime" in start_data:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     else:
-        parsed = datetime.fromisoformat(f"{value}T00:00:00")
+        parsed = datetime.fromisoformat(f"{value}T00:00:00+00:00")
     return (parsed, event.get("id") or "")
 
 
