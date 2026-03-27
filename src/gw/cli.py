@@ -14,6 +14,7 @@ from gw.errors import EXIT_GENERAL, EXIT_SUCCESS, GwAuthError, GwConfigError, Gw
 from gw.mcp_server import run_mcp_server
 from gw.output import json_option, print_human, print_json, render_error, use_json_output
 from gw.services.calendar import register_calendar_commands
+from gw.services.contacts import register_contacts_commands
 from gw.services.docs import register_docs_commands
 from gw.services.drive import register_drive_commands
 from gw.services.gmail import register_gmail_commands
@@ -87,6 +88,7 @@ main_group = cast(click.Group, main)
 config_click_group = cast(click.Group, config_group)
 auth_group = click.Group(name="auth")
 calendar_group = click.Group(name="calendar")
+contacts_group = click.Group(name="contacts")
 gmail_group = click.Group(name="gmail")
 drive_group = click.Group(name="drive")
 sheets_group = click.Group(name="sheets")
@@ -153,6 +155,7 @@ config_click_group.add_command(config_path)
 
 register_auth_commands(auth_group)
 register_calendar_commands(calendar_group)
+register_contacts_commands(contacts_group)
 register_gmail_commands(gmail_group)
 register_drive_commands(drive_group)
 register_sheets_commands(sheets_group)
@@ -165,6 +168,7 @@ main_group.add_command(config_click_group)
 main_group.add_command(doctor_cli)
 main_group.add_command(mcp_click_group)
 main_group.add_command(calendar_group)
+main_group.add_command(contacts_group)
 main_group.add_command(gmail_group)
 main_group.add_command(drive_group)
 main_group.add_command(sheets_group)

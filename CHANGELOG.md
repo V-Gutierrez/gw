@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.3.0 (2026-03-26)
+
+### Features
+- `gw contacts search/list` — People API contact lookup from the terminal
+- `gw calendar update/delete` — patch existing events and remove them by ID
+- `gw gmail trash/archive/label/star` — manage message state without leaving the CLI
+- `gw drive upload/download/search` — move files in and out of Drive and query by Drive syntax
+- `gw sheets write` — write single-cell values with user-entered or raw semantics
+- Expanded MCP server tools for the new Contacts, Calendar, Gmail, Drive, and Sheets operations
+
+### Notes
+- Drive scope widened from `drive.readonly` to `drive`
+- Sheets scope widened from `spreadsheets.readonly` to `spreadsheets`
+- Re-authenticate with `gw auth logout && gw auth login` after upgrading to refresh token scopes
+
 ## v0.2.0 (2026-03-26)
 
 ### Features

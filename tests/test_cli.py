@@ -16,6 +16,7 @@ EXPECTED_SUBGROUPS = [
     "calendar",
     "completion",
     "config",
+    "contacts",
     "docs",
     "doctor",
     "drive",
@@ -55,7 +56,7 @@ def test_root_help_lists_all_subgroups():
 def test_version_flag():
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "0.2.0" in result.output
+    assert "0.3.0" in result.output
 
 
 def test_config_show():
@@ -191,6 +192,11 @@ def test_docs_subgroup_help():
     assert result.exit_code == 0
 
 
+def test_contacts_subgroup_help():
+    result = runner.invoke(main, ["contacts", "--help"])
+    assert result.exit_code == 0
+
+
 def test_calendar_calendars_alias_help():
     result = runner.invoke(main, ["calendar", "calendars", "--help"])
     assert result.exit_code == 0
@@ -221,6 +227,102 @@ def test_calendar_today_all_json(mock_build_service: MagicMock):
     data = json.loads(result.output)
     assert data[0]["summary"] == "Standup"
     assert data[0]["calendar"] == "Primary"
+
+
+@patch("gw.services.contacts.build_service")
+def test_contacts_search_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    people = service.people.return_value
+    people.searchContacts.side_effect = [
+        _mock_execute({"results": []}),
+        _mock_execute(
+            {
+                "results": [
+                    {
+                        "person": {
+                            "resourceName": "people/123",
+                            "names": [{"displayName": "Alice Example"}],
+                            "emailAddresses": [{"value": "alice@example.com"}],
+                            "phoneNumbers": [{"value": "+55 11 99999-0000"}],
+                        }
+                    }
+                ]
+            }
+        ),
+    ]
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["contacts", "search", "Alice", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data[0]["resource_name"] == "people/123"
+    assert data[0]["name"] == "Alice Example"
+
+
+@patch("gw.services.contacts.build_service")
+def test_contacts_list_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.people.return_value.connections.return_value.list.return_value = _mock_execute(
+        {
+            "connections": [
+                {
+                    "resourceName": "people/456",
+                    "names": [{"displayName": "Bob Example"}],
+                    "emailAddresses": [{"value": "bob@example.com"}],
+                }
+            ]
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["contacts", "list", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data[0]["resource_name"] == "people/456"
+    assert data[0]["emails"] == ["bob@example.com"]
+
+
+@patch("gw.services.calendar.build_service")
+def test_calendar_delete_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.events.return_value.delete.return_value = _mock_execute({})
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["calendar", "delete", "evt-1", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data == {"deleted": True, "event_id": "evt-1", "calendar": "primary"}
+
+
+@patch("gw.services.calendar.build_service")
+def test_calendar_update_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.events.return_value.patch.return_value = _mock_execute(
+        {"id": "evt-1", "htmlLink": "https://calendar/event/evt-1"}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main,
+        [
+            "calendar",
+            "update",
+            "evt-1",
+            "--title",
+            "Updated title",
+            "--description",
+            "Updated notes",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["id"] == "evt-1"
+    assert data["updated_fields"] == ["description", "summary"]
 
 
 @patch("gw.services.gmail.build_service")
@@ -254,6 +356,73 @@ def test_gmail_list_json(mock_build_service: MagicMock):
     assert data[0]["subject"] == "Hello"
 
 
+@patch("gw.services.gmail.build_service")
+def test_gmail_trash_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.messages.return_value.trash.return_value = _mock_execute(
+        {"id": "abc", "threadId": "thr"}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["gmail", "trash", "abc", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["trashed"] is True
+    assert data["id"] == "abc"
+
+
+@patch("gw.services.gmail.build_service")
+def test_gmail_archive_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.messages.return_value.modify.return_value = _mock_execute(
+        {"id": "abc", "threadId": "thr", "labelIds": ["CATEGORY_PERSONAL"]}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["gmail", "archive", "abc", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["archived"] is True
+    assert data["id"] == "abc"
+
+
+@patch("gw.services.gmail.build_service")
+def test_gmail_label_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.labels.return_value.list.return_value = _mock_execute(
+        {"labels": [{"id": "Label_1", "name": "Work"}]}
+    )
+    service.users.return_value.messages.return_value.modify.return_value = _mock_execute(
+        {"id": "abc", "threadId": "thr", "labelIds": ["Label_1"]}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["gmail", "label", "abc", "Work", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["label"] == "Work"
+    assert data["action"] == "added"
+
+
+@patch("gw.services.gmail.build_service")
+def test_gmail_star_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.messages.return_value.modify.return_value = _mock_execute(
+        {"id": "abc", "threadId": "thr", "labelIds": ["STARRED"]}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["gmail", "star", "abc", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["starred"] is True
+    assert data["id"] == "abc"
+
+
 @patch("gw.services.drive.build_service")
 def test_drive_list_json(mock_build_service: MagicMock):
     service = MagicMock()
@@ -278,6 +447,84 @@ def test_drive_list_json(mock_build_service: MagicMock):
     assert data[0]["name"] == "Doc"
 
 
+@patch("gw.services.drive.MediaFileUpload")
+@patch("gw.services.drive.build_service")
+def test_drive_upload_json(mock_build_service: MagicMock, mock_media_upload: MagicMock):
+    service = MagicMock()
+    service.files.return_value.create.return_value = _mock_execute(
+        {
+            "id": "file-1",
+            "name": "upload.txt",
+            "mimeType": "text/plain",
+            "webViewLink": "https://drive/file-1",
+        }
+    )
+    mock_build_service.return_value = service
+    mock_media_upload.return_value = MagicMock()
+
+    with runner.isolated_filesystem():
+        Path("upload.txt").write_text("hello")
+        result = runner.invoke(main, ["drive", "upload", "upload.txt", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["id"] == "file-1"
+    assert data["name"] == "upload.txt"
+
+
+@patch("gw.services.drive.MediaIoBaseDownload")
+@patch("gw.services.drive.build_service")
+def test_drive_download_json(mock_build_service: MagicMock, mock_downloader_cls: MagicMock):
+    service = MagicMock()
+    service.files.return_value.get.return_value = _mock_execute(
+        {"id": "file-1", "name": "notes.txt", "mimeType": "text/plain", "size": "5"}
+    )
+    service.files.return_value.get_media.return_value = MagicMock()
+    mock_build_service.return_value = service
+
+    def _build_downloader(buffer, _request):
+        class Downloader:
+            def next_chunk(self):
+                buffer.write(b"hello")
+                return None, True
+
+        return Downloader()
+
+    mock_downloader_cls.side_effect = _build_downloader
+
+    with runner.isolated_filesystem():
+        result = runner.invoke(main, ["drive", "download", "file-1", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["id"] == "file-1"
+    assert data["path"].endswith("notes.txt")
+
+
+@patch("gw.services.drive.build_service")
+def test_drive_search_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.files.return_value.list.return_value = _mock_execute(
+        {
+            "files": [
+                {
+                    "id": "drive-2",
+                    "name": "Quarterly report",
+                    "mimeType": "application/pdf",
+                    "modifiedTime": "2026-03-26T10:00:00Z",
+                }
+            ]
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["drive", "search", "name contains 'report'", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data[0]["id"] == "drive-2"
+
+
 @patch("gw.services.sheets.build_service")
 def test_sheets_read_json(mock_build_service: MagicMock):
     service = MagicMock()
@@ -291,6 +538,27 @@ def test_sheets_read_json(mock_build_service: MagicMock):
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data["rows"][0] == ["a", "b"]
+
+
+@patch("gw.services.sheets.build_service")
+def test_sheets_write_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.spreadsheets.return_value.values.return_value.update.return_value = _mock_execute(
+        {
+            "updatedRange": "Sheet1!A1",
+            "updatedRows": 1,
+            "updatedColumns": 1,
+            "updatedCells": 1,
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["sheets", "write", "sheet-id", "Sheet1!A1", "data", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["range"] == "Sheet1!A1"
+    assert data["updated_cells"] == 1
 
 
 @patch("gw.services.docs.build_service")

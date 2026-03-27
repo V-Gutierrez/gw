@@ -19,6 +19,31 @@ def read_sheet_values(spreadsheet_id: str, range_name: str) -> dict[str, Any]:
     return {"spreadsheet_id": spreadsheet_id, "range": range_name, "rows": values}
 
 
+def write_sheet_value(
+    spreadsheet_id: str, range_name: str, value: str, raw: bool = False
+) -> dict[str, Any]:
+    service = build_service("sheets", "v4")
+    result = (
+        service.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=spreadsheet_id,
+            range=range_name,
+            valueInputOption="RAW" if raw else "USER_ENTERED",
+            body={"values": [[value]]},
+        )
+        .execute()
+    )
+    return {
+        "spreadsheet_id": spreadsheet_id,
+        "range": result.get("updatedRange", range_name),
+        "updated_rows": result.get("updatedRows", 0),
+        "updated_columns": result.get("updatedColumns", 0),
+        "updated_cells": result.get("updatedCells", 0),
+        "value_input_option": "RAW" if raw else "USER_ENTERED",
+    }
+
+
 def register_sheets_commands(group: click.Group) -> None:
     @group.command("read")
     @click.argument("spreadsheet_id")
@@ -42,3 +67,32 @@ def register_sheets_commands(group: click.Group) -> None:
             print_human(f"Spreadsheet data ({len(values)} rows):", emoji="📊")
             for row in values:
                 print_human("  " + " | ".join(str(cell) for cell in row))
+
+    @group.command("write")
+    @click.argument("spreadsheet_id")
+    @click.argument("range_name")
+    @click.argument("value")
+    @click.option("--raw", is_flag=True, help="Write the value without Sheets parsing.")
+    @json_option
+    @click.pass_context
+    def write_command(
+        ctx: click.Context,
+        spreadsheet_id: str,
+        range_name: str,
+        value: str,
+        raw: bool,
+        json_output: bool | None,
+    ) -> None:
+        data = write_sheet_value(
+            spreadsheet_id=spreadsheet_id,
+            range_name=range_name,
+            value=value,
+            raw=raw,
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_human(
+                f"Updated {data['updated_cells']} cell(s) in {data['range']}",
+                emoji="📊",
+            )

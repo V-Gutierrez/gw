@@ -211,6 +211,74 @@ def read_gmail_messages(
     return messages
 
 
+def trash_gmail_message(message_id: str) -> dict[str, Any]:
+    service = _gmail_service()
+    message = service.users().messages().trash(userId="me", id=message_id).execute()
+    return {
+        "id": message.get("id", message_id),
+        "thread_id": message.get("threadId"),
+        "trashed": True,
+    }
+
+
+def archive_gmail_message(message_id: str) -> dict[str, Any]:
+    service = _gmail_service()
+    message = (
+        service.users()
+        .messages()
+        .modify(userId="me", id=message_id, body={"removeLabelIds": ["INBOX"], "addLabelIds": []})
+        .execute()
+    )
+    return {
+        "id": message.get("id", message_id),
+        "thread_id": message.get("threadId"),
+        "archived": True,
+        "label_ids": message.get("labelIds", []),
+    }
+
+
+def _resolve_label_id(service: Any, label_name: str) -> str:
+    labels = service.users().labels().list(userId="me").execute().get("labels", [])
+    for label in labels:
+        if label.get("name") == label_name:
+            resolved = label.get("id")
+            if resolved:
+                return resolved
+    raise click.ClickException(f"Label not found: {label_name}")
+
+
+def label_gmail_message(message_id: str, label_name: str, remove: bool = False) -> dict[str, Any]:
+    service = _gmail_service()
+    label_id = _resolve_label_id(service, label_name)
+    body = {
+        "addLabelIds": [] if remove else [label_id],
+        "removeLabelIds": [label_id] if remove else [],
+    }
+    message = service.users().messages().modify(userId="me", id=message_id, body=body).execute()
+    return {
+        "id": message.get("id", message_id),
+        "thread_id": message.get("threadId"),
+        "label": label_name,
+        "action": "removed" if remove else "added",
+        "label_ids": message.get("labelIds", []),
+    }
+
+
+def star_gmail_message(message_id: str, remove: bool = False) -> dict[str, Any]:
+    service = _gmail_service()
+    body = {
+        "addLabelIds": [] if remove else ["STARRED"],
+        "removeLabelIds": ["STARRED"] if remove else [],
+    }
+    message = service.users().messages().modify(userId="me", id=message_id, body=body).execute()
+    return {
+        "id": message.get("id", message_id),
+        "thread_id": message.get("threadId"),
+        "starred": not remove,
+        "label_ids": message.get("labelIds", []),
+    }
+
+
 def register_gmail_commands(group: click.Group) -> None:
     @group.command("send")
     @click.argument("to")
@@ -312,3 +380,60 @@ def register_gmail_commands(group: click.Group) -> None:
                 print_human(f"Date: {message['date']}")
                 print_human("=" * 60)
                 print_human(message["body"])
+
+    @group.command("trash")
+    @click.argument("message_id")
+    @json_option
+    @click.pass_context
+    def trash_command(ctx: click.Context, message_id: str, json_output: bool | None) -> None:
+        data = trash_gmail_message(message_id=message_id)
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Message moved to trash: {data['id']}")
+
+    @group.command("archive")
+    @click.argument("message_id")
+    @json_option
+    @click.pass_context
+    def archive_command(ctx: click.Context, message_id: str, json_output: bool | None) -> None:
+        data = archive_gmail_message(message_id=message_id)
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Message archived: {data['id']}")
+
+    @group.command("label")
+    @click.argument("message_id")
+    @click.argument("label_name")
+    @click.option("--remove", is_flag=True, help="Remove the label instead of adding it.")
+    @json_option
+    @click.pass_context
+    def label_command(
+        ctx: click.Context,
+        message_id: str,
+        label_name: str,
+        remove: bool,
+        json_output: bool | None,
+    ) -> None:
+        data = label_gmail_message(message_id=message_id, label_name=label_name, remove=remove)
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            action = "removed from" if remove else "added to"
+            print_success(f"Label {label_name!r} {action} message {data['id']}")
+
+    @group.command("star")
+    @click.argument("message_id")
+    @click.option("--remove", is_flag=True, help="Remove the starred label.")
+    @json_option
+    @click.pass_context
+    def star_command(
+        ctx: click.Context, message_id: str, remove: bool, json_output: bool | None
+    ) -> None:
+        data = star_gmail_message(message_id=message_id, remove=remove)
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            action = "unstarred" if remove else "starred"
+            print_success(f"Message {action}: {data['id']}")

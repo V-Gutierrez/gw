@@ -46,6 +46,7 @@ def _fetch_events(
         for event in response.get("items", []):
             items.append(
                 {
+                    "id": event.get("id"),
                     "summary": event.get("summary", "(No title)"),
                     "start": event.get("start", {}),
                     "end": event.get("end", {}),
@@ -153,6 +154,55 @@ def list_calendars() -> list[dict[str, Any]]:
     ]
 
 
+def delete_calendar_event(
+    event_id: str, default_calendar: str, calendar_id: str | None = None
+) -> dict[str, Any]:
+    service = _calendar_service()
+    target_calendar = calendar_id or default_calendar
+    service.events().delete(calendarId=target_calendar, eventId=event_id).execute()
+    return {"deleted": True, "event_id": event_id, "calendar": target_calendar}
+
+
+def update_calendar_event(
+    event_id: str,
+    timezone: str,
+    default_calendar: str,
+    calendar_id: str | None = None,
+    title: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
+    if (start is None) != (end is None):
+        raise click.ClickException("Provide both --start and --end together.")
+
+    patch: dict[str, Any] = {}
+    if title is not None:
+        patch["summary"] = title
+    if description is not None:
+        patch["description"] = description
+    if start is not None and end is not None:
+        start_dt = parse_date(start, timezone)
+        end_dt = parse_date(end, timezone)
+        patch["start"] = {"dateTime": to_rfc3339(start_dt), "timeZone": timezone}
+        patch["end"] = {"dateTime": to_rfc3339(end_dt), "timeZone": timezone}
+
+    if not patch:
+        raise click.ClickException("Provide at least one field to update.")
+
+    service = _calendar_service()
+    target_calendar = calendar_id or default_calendar
+    updated = (
+        service.events().patch(calendarId=target_calendar, eventId=event_id, body=patch).execute()
+    )
+    return {
+        "id": updated.get("id", event_id),
+        "html_link": updated.get("htmlLink"),
+        "calendar": target_calendar,
+        "updated_fields": sorted(patch.keys()),
+    }
+
+
 def register_calendar_commands(group: click.Group) -> None:
     @group.command("today")
     @click.option("--all", "all_calendars", is_flag=True, help="Include all calendars.")
@@ -246,6 +296,60 @@ def register_calendar_commands(group: click.Group) -> None:
                 suffix = " [PRIMARY]" if item["primary"] else ""
                 print_human(f"  • {item['summary']}{suffix}")
                 print_human(f"    ID: {item['id']}")
+
+    @group.command("delete")
+    @click.argument("event_id")
+    @click.option("--calendar", "calendar_id", default=None, help="Calendar containing the event.")
+    @json_option
+    @click.pass_context
+    def delete_command(
+        ctx: click.Context, event_id: str, calendar_id: str | None, json_output: bool | None
+    ) -> None:
+        config = ctx.obj["config"]
+        data = delete_calendar_event(
+            event_id=event_id,
+            default_calendar=config.default_calendar,
+            calendar_id=calendar_id,
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Event deleted: {data['event_id']}")
+
+    @group.command("update")
+    @click.argument("event_id")
+    @click.option("--title", default=None, help="Updated event title.")
+    @click.option("--start", default=None, help="Updated event start datetime.")
+    @click.option("--end", default=None, help="Updated event end datetime.")
+    @click.option("--description", default=None, help="Updated event description.")
+    @click.option("--calendar", "calendar_id", default=None, help="Calendar containing the event.")
+    @json_option
+    @click.pass_context
+    def update_command(
+        ctx: click.Context,
+        event_id: str,
+        title: str | None,
+        start: str | None,
+        end: str | None,
+        description: str | None,
+        calendar_id: str | None,
+        json_output: bool | None,
+    ) -> None:
+        config = ctx.obj["config"]
+        data = update_calendar_event(
+            event_id=event_id,
+            timezone=config.timezone,
+            default_calendar=config.default_calendar,
+            calendar_id=calendar_id,
+            title=title,
+            start=start,
+            end=end,
+            description=description,
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Event updated: {data['id']}")
 
     @group.command("calendars", hidden=True)
     @json_option
