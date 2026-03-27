@@ -99,6 +99,36 @@ def send_gmail_message(
     return {"id": sent.get("id"), "to": to, "subject": subject}
 
 
+def create_gmail_draft(
+    to: str,
+    subject: str,
+    body: str,
+    cc: str | None = None,
+    bcc: str | None = None,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _gmail_service(config)
+    message = MIMEText(body)
+    message["To"] = to
+    message["Subject"] = subject
+    if cc:
+        message["Cc"] = cc
+    if bcc:
+        message["Bcc"] = bcc
+
+    draft = execute_google_request(
+        service.users()
+        .drafts()
+        .create(userId="me", body={"message": {"raw": _encode_message(message)}})
+    )
+    return {
+        "id": draft.get("id"),
+        "message_id": draft.get("message", {}).get("id"),
+        "to": to,
+        "subject": subject,
+    }
+
+
 def reply_to_gmail_message(
     message_id: str,
     body: str,
@@ -442,6 +472,30 @@ def register_gmail_commands(group: click.Group) -> None:
             print_json(data)
         else:
             print_success(f"Email sent! Message ID: {data.get('id')}")
+
+    @group.command("draft")
+    @click.argument("to")
+    @click.argument("subject")
+    @click.argument("body")
+    @click.option("--cc", default=None)
+    @click.option("--bcc", default=None)
+    @json_option
+    @click.pass_context
+    def draft_command(
+        ctx: click.Context,
+        to: str,
+        subject: str,
+        body: str,
+        cc: str | None,
+        bcc: str | None,
+        json_output: bool | None,
+    ) -> None:
+        config = ctx.obj["config"]
+        data = create_gmail_draft(to=to, subject=subject, body=body, cc=cc, bcc=bcc, config=config)
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Draft created! Draft ID: {data.get('id')}")
 
     @group.command("reply")
     @click.argument("message_id")

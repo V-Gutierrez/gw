@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Google Workspace in your terminal.</strong><br/>
-  Gmail, Calendar, Contacts, Drive, Sheets, Docs — one CLI. Permanent OAuth. Zero bloat.
+  Gmail, Calendar, Contacts, Drive, Sheets, Docs, Tasks, Meet — one CLI. Permanent OAuth. Zero bloat.
 </p>
 
 <p align="center">
@@ -25,35 +25,91 @@ Every Google Workspace tool is either calendar-only, admin-only, or abandoned. N
 
 ## Install
 
+### macOS / Linux (pip)
+
 ```bash
-pip install -e ".[dev]"
+pip install gw-cli
 ```
 
-For a minimal runtime-only install:
+### macOS (Homebrew)
 
 ```bash
+brew tap v-gutierrez/gw
+brew install gw
+```
+
+### From source
+
+```bash
+git clone https://github.com/v-gutierrez/gw.git
+cd gw
 pip install -e .
 ```
 
-## Authentication
+## Getting Started
 
-`gw` expects an OAuth client credentials file at `~/.config/gw/credentials.json` by default.
-After that:
+### 1. Create a Google Cloud OAuth App (one-time, ~3 minutes)
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project (or select an existing one)
+3. Go to **APIs & Services** → **Library**
+4. Enable these APIs:
+   - Gmail API
+   - Google Calendar API
+   - Google Drive API
+   - Google Sheets API
+   - Google Docs API
+   - People API (Contacts)
+   - Google Tasks API
+5. Go to **APIs & Services** → **Credentials**
+6. Click **Create Credentials** → **OAuth client ID**
+7. Application type: **Desktop app**
+8. Name: `gw-cli`
+9. Click **Create** → **Download JSON**
+10. Move the file:
+    ```bash
+    mv ~/Downloads/client_secret_*.json ~/.config/gw/credentials.json
+    ```
+
+### 2. Login
 
 ```bash
 gw auth login
-gw auth login --profile work
-gw auth login --headless
-gw auth setup
-gw auth status
-gw auth logout
-gw doctor
 ```
 
-Tokens are stored as JSON at `~/.config/gw/token.json` by default, or `token-{profile}.json` when you pass `--profile PROFILE`.
-Headless login prints an authorization URL and prompts for the code instead of opening a browser.
+For headless environments (no browser):
 
-If you used `gw` before v0.3.0, run `gw auth logout && gw auth login` after upgrading so your token picks up the new Drive and Sheets write scopes.
+```bash
+gw auth login --headless
+```
+
+For multiple accounts:
+
+```bash
+gw auth login --profile work
+```
+
+### 3. Verify
+
+```bash
+gw doctor
+gw calendar today
+```
+
+### Full auth command reference
+
+```bash
+gw auth setup           # guided setup wizard (creates config + logs in)
+gw auth login           # OAuth login (opens browser)
+gw auth login --headless  # print auth URL, paste code manually
+gw auth login --profile work  # login a named profile
+gw auth status          # show current token/scope status
+gw auth logout          # revoke token and delete local files
+```
+
+Tokens are stored at `~/.config/gw/token.json` by default, or `token-{profile}.json` when you pass `--profile PROFILE`.
+
+> **Upgrading from v0.4.x?** Run `gw auth logout && gw auth login` to refresh your token with the new Tasks scope.
 
 ## Configuration
 
@@ -101,6 +157,9 @@ gw calendar delete EVENT_ID
 gw calendar list
 gw calendar calendars
 
+gw meet create
+gw meet create --title "Weekly sync" --json
+
 gw contacts search "alice"
 gw contacts list --max 20 --json
 
@@ -113,17 +172,28 @@ gw gmail mark-unread 18c0ffee --json
 gw gmail list --query "from:alice@example.com" --json
 gw gmail read 18c0ffee
 gw gmail send "alice@example.com" "Subject" "Hello"
+gw gmail draft "alice@example.com" "Draft subject" "Hello later"
 gw gmail trash 18c0ffee
 gw gmail archive 18c0ffee
 gw gmail label 18c0ffee Work
 gw gmail star 18c0ffee
 
 gw drive list --max 20 --json
+gw drive search "report"
 gw drive search "name contains 'report'"
 gw drive upload file.txt
+gw drive mkdir "Projects"
+gw drive share FILE_ID alice@example.com --role writer
+gw drive info FILE_ID --json
 gw drive download FILE_ID --out report.pdf
 gw drive download FILE_ID --format txt
 gw drive download SHEET_FILE_ID --format csv
+
+gw tasks lists
+gw tasks list --json
+gw tasks add "Buy milk" --due 2026-04-01
+gw tasks complete TASK_ID
+gw tasks delete TASK_ID
 
 gw sheets read SPREADSHEET_ID "Sheet1!A1:C5"
 gw sheets write SPREADSHEET_ID "Sheet1!A1" "data"
@@ -161,12 +231,13 @@ gw completion fish | source
 
 Exposed tools:
 
-- `gmail_send`, `gmail_reply`, `gmail_forward`, `gmail_list`, `gmail_search`, `gmail_thread`, `gmail_count`, `gmail_read`, `gmail_trash`, `gmail_archive`, `gmail_label`, `gmail_star`, `gmail_mark_read`, `gmail_mark_unread`
-- `calendar_today`, `calendar_tomorrow`, `calendar_week`, `calendar_agenda`, `calendar_next`, `calendar_create`, `calendar_list`, `calendar_delete`, `calendar_update`
+- `gmail_send`, `gmail_draft`, `gmail_reply`, `gmail_forward`, `gmail_list`, `gmail_search`, `gmail_thread`, `gmail_count`, `gmail_read`, `gmail_trash`, `gmail_archive`, `gmail_label`, `gmail_star`, `gmail_mark_read`, `gmail_mark_unread`
+- `calendar_today`, `calendar_tomorrow`, `calendar_week`, `calendar_agenda`, `calendar_next`, `calendar_create`, `calendar_list`, `calendar_delete`, `calendar_update`, `meet_create`
 - `contacts_search`, `contacts_list`
-- `drive_list`, `drive_search`, `drive_upload`, `drive_download`
+- `drive_list`, `drive_search`, `drive_mkdir`, `drive_share`, `drive_info`, `drive_upload`, `drive_download`
 - `sheets_read`, `sheets_write`
 - `docs_read`, `docs_export`, `docs_list`
+- `tasks_lists`, `tasks_list`, `tasks_add`, `tasks_complete`, `tasks_delete`
 
 ## Exit Codes
 
@@ -195,6 +266,7 @@ gw requests the following Google API scopes during `gw auth login`:
 | `gmail.modify` | Read, list, search, trash, archive, label, and star emails |
 | `calendar` | Read, create, update, and delete calendar events |
 | `drive` | List, search, upload, and download Drive files |
+| `tasks` | List, create, complete, and delete Google Tasks |
 | `spreadsheets` | Read and write Sheets data |
 | `documents.readonly` | Read and export Docs |
 | `contacts.readonly` | Search and list contacts |

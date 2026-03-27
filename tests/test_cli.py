@@ -21,8 +21,10 @@ EXPECTED_SUBGROUPS = [
     "doctor",
     "drive",
     "gmail",
+    "meet",
     "mcp",
     "sheets",
+    "tasks",
 ]
 
 
@@ -61,7 +63,7 @@ def test_root_help_lists_all_subgroups():
 def test_version_flag():
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "0.4.0" in result.output
+    assert "0.5.0" in result.output
 
 
 def test_config_show():
@@ -213,6 +215,16 @@ def test_docs_subgroup_help():
 
 def test_contacts_subgroup_help():
     result = runner.invoke(main, ["contacts", "--help"])
+    assert result.exit_code == 0
+
+
+def test_meet_subgroup_help():
+    result = runner.invoke(main, ["meet", "--help"])
+    assert result.exit_code == 0
+
+
+def test_tasks_subgroup_help():
+    result = runner.invoke(main, ["tasks", "--help"])
     assert result.exit_code == 0
 
 
@@ -406,6 +418,26 @@ def test_gmail_search_json(mock_build_service: MagicMock):
 
 
 @patch("gw.services.gmail.build_service")
+def test_gmail_draft_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.drafts.return_value.create.return_value = _mock_execute(
+        {"id": "draft-1", "message": {"id": "msg-1"}}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["gmail", "draft", "to@example.com", "Subject", "Body", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data == {
+        "id": "draft-1",
+        "message_id": "msg-1",
+        "to": "to@example.com",
+        "subject": "Subject",
+    }
+
+
+@patch("gw.services.gmail.build_service")
 def test_gmail_thread_json(mock_build_service: MagicMock):
     service = MagicMock()
     service.users.return_value.messages.return_value.get.return_value = _mock_execute(
@@ -588,6 +620,36 @@ def test_calendar_agenda_json(mock_build_service: MagicMock):
 
 
 @patch("gw.services.calendar.build_service")
+def test_meet_create_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.events.return_value.insert.return_value = _mock_execute(
+        {
+            "id": "meet-1",
+            "summary": "Team Sync",
+            "start": {"dateTime": "2026-03-27T10:00:00-04:00", "timeZone": "America/Manaus"},
+            "end": {"dateTime": "2026-03-27T10:30:00-04:00", "timeZone": "America/Manaus"},
+            "htmlLink": "https://calendar.google.com/event?eid=meet-1",
+            "conferenceData": {
+                "entryPoints": [
+                    {
+                        "entryPointType": "video",
+                        "uri": "https://meet.google.com/abc-defg-hij",
+                    }
+                ]
+            },
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["meet", "create", "--title", "Team Sync", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["id"] == "meet-1"
+    assert data["meet_link"] == "https://meet.google.com/abc-defg-hij"
+
+
+@patch("gw.services.calendar.build_service")
 def test_calendar_next_json(mock_build_service: MagicMock):
     service = MagicMock()
     service.events.return_value.list.return_value = _mock_execute(
@@ -714,6 +776,87 @@ def test_drive_search_json(mock_build_service: MagicMock):
     assert data[0]["id"] == "drive-2"
 
 
+@patch("gw.services.drive.build_service")
+def test_drive_search_wraps_plain_query(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.files.return_value.list.return_value = _mock_execute({"files": []})
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["drive", "search", "KWAN", "--json"])
+
+    assert result.exit_code == 0
+    call_kwargs = service.files.return_value.list.call_args.kwargs
+    assert call_kwargs["q"] == "name contains 'KWAN'"
+
+
+@patch("gw.services.drive.build_service")
+def test_drive_mkdir_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.files.return_value.create.return_value = _mock_execute(
+        {
+            "id": "folder-1",
+            "name": "Projects",
+            "mimeType": "application/vnd.google-apps.folder",
+            "webViewLink": "https://drive.google.com/drive/folders/folder-1",
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["drive", "mkdir", "Projects", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["id"] == "folder-1"
+    assert data["mime_type"] == "application/vnd.google-apps.folder"
+
+
+@patch("gw.services.drive.build_service")
+def test_drive_share_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.permissions.return_value.create.return_value = _mock_execute(
+        {"id": "perm-1", "emailAddress": "user@example.com", "role": "writer", "type": "user"}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main,
+        ["drive", "share", "file-1", "user@example.com", "--role", "writer", "--json"],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["email"] == "user@example.com"
+    assert data["role"] == "writer"
+
+
+@patch("gw.services.drive.build_service")
+def test_drive_info_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.files.return_value.get.return_value = _mock_execute(
+        {
+            "id": "file-1",
+            "name": "Report",
+            "mimeType": "application/pdf",
+            "size": "1024",
+            "createdTime": "2026-03-27T10:00:00Z",
+            "modifiedTime": "2026-03-27T11:00:00Z",
+            "owners": [{"displayName": "Victor"}],
+            "webViewLink": "https://drive.google.com/file/d/file-1/view",
+            "shared": True,
+            "fileExtension": "pdf",
+            "description": "Quarterly report",
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["drive", "info", "file-1", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["name"] == "Report"
+    assert data["shared"] is True
+
+
 @patch("gw.services.sheets.build_service")
 def test_sheets_read_json(mock_build_service: MagicMock):
     service = MagicMock()
@@ -763,6 +906,90 @@ def test_docs_list_json(mock_build_service: MagicMock):
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data[0]["id"] == "doc-1"
+
+
+@patch("gw.services.tasks.build_service")
+def test_tasks_lists_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.tasklists.return_value.list.return_value = _mock_execute(
+        {"items": [{"id": "list-1", "title": "Personal", "updated": "2026-03-27T00:00:00.000Z"}]}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["tasks", "lists", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data[0]["title"] == "Personal"
+
+
+@patch("gw.services.tasks.build_service")
+def test_tasks_list_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.tasks.return_value.list.return_value = _mock_execute(
+        {
+            "items": [
+                {
+                    "id": "task-1",
+                    "title": "Buy milk",
+                    "status": "needsAction",
+                    "due": "2026-04-01T00:00:00.000Z",
+                }
+            ]
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["tasks", "list", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data[0]["id"] == "task-1"
+    call_kwargs = service.tasks.return_value.list.call_args.kwargs
+    assert call_kwargs["tasklist"] == "@default"
+
+
+@patch("gw.services.tasks.build_service")
+def test_tasks_add_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.tasks.return_value.insert.return_value = _mock_execute(
+        {"id": "task-1", "title": "Buy milk", "status": "needsAction"}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["tasks", "add", "Buy milk", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["title"] == "Buy milk"
+
+
+@patch("gw.services.tasks.build_service")
+def test_tasks_complete_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.tasks.return_value.patch.return_value = _mock_execute(
+        {"id": "task-1", "title": "Buy milk", "status": "completed", "completed": "2026-03-27T10:00:00Z"}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["tasks", "complete", "task-1", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["status"] == "completed"
+
+
+@patch("gw.services.tasks.build_service")
+def test_tasks_delete_json(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.tasks.return_value.delete.return_value = _mock_execute({})
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["tasks", "delete", "task-1", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data == {"deleted": True, "task_id": "task-1", "list_id": "@default"}
 
 
 @patch("gw.services.gmail.build_service")

@@ -13,12 +13,13 @@ from gw.doctor import doctor_command
 from gw.errors import EXIT_GENERAL, EXIT_SUCCESS, GwAuthError, GwConfigError, GwError
 from gw.mcp_server import run_mcp_server, set_mcp_config
 from gw.output import json_option, print_human, print_json, render_error, use_json_output
-from gw.services.calendar import register_calendar_commands
+from gw.services.calendar import register_calendar_commands, register_meet_commands
 from gw.services.contacts import register_contacts_commands
 from gw.services.docs import register_docs_commands
 from gw.services.drive import register_drive_commands
 from gw.services.gmail import register_gmail_commands
 from gw.services.sheets import register_sheets_commands
+from gw.services.tasks import register_tasks_commands
 
 
 def load_runtime_config(profile: str | None = None):
@@ -95,6 +96,8 @@ gmail_group = click.Group(name="gmail")
 drive_group = click.Group(name="drive")
 sheets_group = click.Group(name="sheets")
 docs_group = click.Group(name="docs")
+meet_group = click.Group(name="meet")
+tasks_group = click.Group(name="tasks")
 
 
 @click.command(name="show")
@@ -164,6 +167,8 @@ register_gmail_commands(gmail_group)
 register_drive_commands(drive_group)
 register_sheets_commands(sheets_group)
 register_docs_commands(docs_group)
+register_meet_commands(meet_group)
+register_tasks_commands(tasks_group)
 mcp_click_group.add_command(mcp_serve_command)
 
 main_group.add_command(auth_group)
@@ -177,3 +182,5 @@ main_group.add_command(gmail_group)
 main_group.add_command(drive_group)
 main_group.add_command(sheets_group)
 main_group.add_command(docs_group)
+main_group.add_command(meet_group)
+main_group.add_command(tasks_group)

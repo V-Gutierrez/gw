@@ -10,6 +10,7 @@ from gw.auth import _get_config
 from gw.config import GWConfig
 from gw.services.calendar import (
     create_calendar_event,
+    create_instant_meet,
     delete_calendar_event,
     get_calendar_agenda,
     get_calendar_next,
@@ -23,13 +24,17 @@ from gw.services.contacts import list_contacts, search_contacts
 from gw.services.docs import export_doc, list_docs, read_doc
 from gw.services.drive import (
     download_drive_file,
+    get_drive_file_info,
     list_drive_files,
+    mkdir_drive_folder,
     search_drive_files,
+    share_drive_file,
     upload_drive_file,
 )
 from gw.services.gmail import (
     archive_gmail_message,
     count_gmail_messages,
+    create_gmail_draft,
     forward_gmail_message,
     get_gmail_thread,
     label_gmail_message,
@@ -44,6 +49,7 @@ from gw.services.gmail import (
     trash_gmail_message,
 )
 from gw.services.sheets import read_sheet_values, write_sheet_value
+from gw.services.tasks import add_task, complete_task, delete_task, list_task_lists, list_tasks
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 
@@ -67,6 +73,15 @@ def gmail_send(
     to: str, subject: str, body: str, cc: str | None = None, bcc: str | None = None
 ) -> dict:
     return send_gmail_message(to=to, subject=subject, body=body, cc=cc, bcc=bcc, config=_config())
+
+
+@mcp_server.tool()
+def gmail_draft(
+    to: str, subject: str, body: str, cc: str | None = None, bcc: str | None = None
+) -> dict:
+    return create_gmail_draft(
+        to=to, subject=subject, body=body, cc=cc, bcc=bcc, config=_config()
+    )
 
 
 @mcp_server.tool()
@@ -232,6 +247,17 @@ def calendar_create(
 
 
 @mcp_server.tool()
+def meet_create(title: str = "Instant Meeting") -> dict:
+    config = _config()
+    return create_instant_meet(
+        title=title,
+        timezone_name=config.timezone,
+        default_calendar=config.default_calendar,
+        config=config,
+    )
+
+
+@mcp_server.tool()
 def calendar_list() -> list[dict]:
     return list_calendars(config=_config())
 
@@ -291,6 +317,21 @@ def drive_search(query: str, max_results: int = 10) -> list[dict]:
 
 
 @mcp_server.tool()
+def drive_mkdir(name: str, parent_id: str | None = None) -> dict:
+    return mkdir_drive_folder(name=name, parent_id=parent_id, config=_config())
+
+
+@mcp_server.tool()
+def drive_share(file_id: str, email: str, role: str = "reader") -> dict:
+    return share_drive_file(file_id=file_id, email=email, role=role, config=_config())
+
+
+@mcp_server.tool()
+def drive_info(file_id: str) -> dict:
+    return get_drive_file_info(file_id=file_id, config=_config())
+
+
+@mcp_server.tool()
 def drive_upload(file_path: str, name: str | None = None, folder_id: str | None = None) -> dict:
     return upload_drive_file(file_path=file_path, name=name, folder_id=folder_id, config=_config())
 
@@ -345,6 +386,41 @@ def docs_export(
 @mcp_server.tool()
 def docs_list(max_results: int = 10) -> list[dict]:
     return list_docs(max_results=max_results, config=_config())
+
+
+@mcp_server.tool()
+def tasks_lists(max_results: int = 100) -> list[dict]:
+    return list_task_lists(max_results=max_results, config=_config())
+
+
+@mcp_server.tool()
+def tasks_list(list_id: str = "@default", max_results: int = 100, show_completed: bool = True) -> list[dict]:
+    return list_tasks(
+        list_id=list_id,
+        max_results=max_results,
+        show_completed=show_completed,
+        config=_config(),
+    )
+
+
+@mcp_server.tool()
+def tasks_add(
+    title: str,
+    notes: str | None = None,
+    due: str | None = None,
+    list_id: str = "@default",
+) -> dict:
+    return add_task(title=title, notes=notes, due=due, list_id=list_id, config=_config())
+
+
+@mcp_server.tool()
+def tasks_complete(task_id: str, list_id: str = "@default") -> dict:
+    return complete_task(task_id=task_id, list_id=list_id, config=_config())
+
+
+@mcp_server.tool()
+def tasks_delete(task_id: str, list_id: str = "@default") -> dict:
+    return delete_task(task_id=task_id, list_id=list_id, config=_config())
 
 
 def run_mcp_server() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 import click
 
@@ -296,6 +297,63 @@ def update_calendar_event(
     }
 
 
+def create_instant_meet(
+    title: str = "Instant Meeting",
+    timezone_name: str = "UTC",
+    default_calendar: str = "primary",
+    duration_minutes: int = 30,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """
+    Create an instant Google Meet event.
+
+    Creates a short calendar event starting now with a conference request.
+    Returns event details including the meet_link.
+    """
+    service = _calendar_service(config)
+    now = now_in_tz(timezone_name)
+    end = now + timedelta(minutes=duration_minutes)
+
+    request_id = str(uuid4())
+
+    event: dict[str, Any] = {
+        "summary": title,
+        "start": {"dateTime": to_rfc3339(now), "timeZone": timezone_name},
+        "end": {"dateTime": to_rfc3339(end), "timeZone": timezone_name},
+        "conferenceData": {
+            "createRequest": {
+                "requestId": request_id,
+                "conferenceSolutionKey": {"type": "hangoutsMeet"},
+            }
+        },
+    }
+
+    created = execute_google_request(
+        service.events().insert(
+            calendarId=default_calendar,
+            body=event,
+            conferenceDataVersion=1,
+        )
+    )
+
+    meet_link = None
+    if "conferenceData" in created and "entryPoints" in created["conferenceData"]:
+        for entry in created["conferenceData"]["entryPoints"]:
+            if entry.get("entryPointType") == "video":
+                meet_link = entry.get("uri")
+                break
+
+    return {
+        "id": created.get("id"),
+        "title": created.get("summary"),
+        "start": created.get("start"),
+        "end": created.get("end"),
+        "meet_link": meet_link,
+        "html_link": created.get("htmlLink"),
+        "calendar": default_calendar,
+    }
+
+
 def register_calendar_commands(group: click.Group) -> None:
     @group.command("today")
     @click.option("--all", "all_calendars", is_flag=True, help="Include all calendars.")
@@ -510,3 +568,25 @@ def register_calendar_commands(group: click.Group) -> None:
     @click.pass_context
     def calendars_alias(ctx: click.Context, json_output: bool | None) -> None:
         ctx.invoke(list_command, json_output=json_output)
+
+
+def register_meet_commands(group: click.Group) -> None:
+    @group.command("create")
+    @click.option("--title", default="Instant Meeting", help="Meeting title.")
+    @json_option
+    @click.pass_context
+    def create_meet(ctx: click.Context, title: str, json_output: bool | None) -> None:
+        config = ctx.obj["config"]
+        data = create_instant_meet(
+            title=title,
+            timezone_name=config.timezone,
+            default_calendar=config.default_calendar,
+            config=config,
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            if data.get("meet_link"):
+                print_success(f"Meeting created: {data['meet_link']}")
+            else:
+                print_human(f"Meeting created (ID: {data.get('id')})", emoji="📞")

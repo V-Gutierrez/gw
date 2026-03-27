@@ -1,7 +1,7 @@
 ---
 name: gw
 description: >
-  Access Google Workspace via gw CLI (Gmail, Calendar, Drive, Sheets, Docs, Contacts).
+  Access Google Workspace via gw CLI (Gmail, Calendar, Drive, Sheets, Docs, Contacts, Tasks, Meet).
   Permanent OAuth (never expires). Use when: (1) Checking calendar (today/week/agenda),
   (2) Sending/searching/reading Gmail, (3) Managing Drive files, (4) Reading/writing Sheets,
   (5) Reading/exporting Docs, (6) Searching contacts.
@@ -52,6 +52,7 @@ gw gmail send TO SUBJECT BODY        # Send email
 gw gmail send "to@example.com" "Subject" "Body text"
 gw gmail send "to@example.com" "Subject" "Body" --cc "cc@example.com"
 gw gmail send "to@example.com" "Subject" "Body" --bcc "bcc@example.com"
+gw gmail draft "to@example.com" "Subject" "Body text"
 
 gw gmail reply <message_id> "Reply body"
 gw gmail forward <message_id> "to@example.com"
@@ -106,6 +107,8 @@ gw calendar create "Weekly Sync" "2026-03-27T10:00:00" "2026-03-27T11:00:00" \
 
 gw calendar update <event_id>        # Update event
 gw calendar delete <event_id>        # Delete event
+gw meet create                       # Create instant Meet link
+gw meet create --title "Team Sync"   # Custom instant meeting title
 ```
 
 ### JSON output
@@ -126,6 +129,9 @@ gw drive upload /path/to/file        # Upload file
 gw drive upload /path/to/file --name "Custom Name"
 gw drive upload /path/to/file --folder "folder_id"
 gw drive download <file_id>          # Download file
+gw drive mkdir "Projects"           # Create folder
+gw drive share <file_id> user@example.com --role writer
+gw drive info <file_id>              # Show metadata
 ```
 
 ### JSON output
@@ -179,6 +185,26 @@ gw contacts search "query"           # Search contacts by name/email
 ### JSON output
 ```bash
 gw --json contacts search "Victor"
+```
+
+---
+
+## Tasks Commands
+
+```bash
+gw tasks lists                       # List task lists
+gw tasks list                        # List tasks from the default list
+gw tasks list --list <list_id>       # List tasks from a specific list
+gw tasks add "Buy milk"              # Create a task
+gw tasks add "Buy milk" --notes "2L" --due 2026-04-01
+gw tasks complete <task_id>          # Mark task complete
+gw tasks delete <task_id>            # Delete task
+```
+
+### JSON output
+```bash
+gw --json tasks list
+gw --json tasks add "Prepare review" --due 2026-04-02
 ```
 
 ---

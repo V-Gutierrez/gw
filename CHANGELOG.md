@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.5.0 (2026-03-27)
+
+### Features
+- Fixed `gw drive search` so free-text searches are translated into valid Drive API `q` syntax instead of returning a 400 Invalid Value error
+- Added `gw tasks list/lists/add/complete/delete` for Google Tasks management from the terminal
+- Added `gw meet create` for instant Google Meet link creation through Calendar conference data
+- Added `gw drive mkdir/share/info` for folder creation, permission sharing, and metadata inspection
+- Added `gw gmail draft` plus matching MCP tools for Tasks, Meet, Drive, and Gmail draft workflows
+
+### Notes
+- Re-authenticate with `gw auth logout && gw auth login` after upgrading so your token picks up the new Google Tasks scope
+
 ## v0.4.0 (2026-03-27)
 
 ### Features
