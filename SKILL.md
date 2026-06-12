@@ -247,15 +247,3 @@ gw --profile personal gmail list
 4. **Auth:** Token never expires — no troubleshooting needed
 5. **Timezone:** Uses `America/Sao_Paulo` automatically
 
-## Victor's Calendars
-
-| Calendar | Type |
-|----------|------|
-| Eu (Primary) | Personal |
-| Leroy Merlin | Work |
-| Família | Family events |
-| Health & Meds | Medications/vitamins |
-| VC ENG | VC Engineering projects |
-| Social Media | Content calendar |
-| Mentoria | Mentorship sessions |
-| Feriados no Brasil | Brazilian holidays |
