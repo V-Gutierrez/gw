@@ -88,9 +88,9 @@ def parse_after_flag(value: str) -> str:
         raise ValueError("--after must use formats like 6h, 24h, or 7d.")
 
     amount = int(amount_text)
-    delta = timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
-    threshold = datetime.now(tz=ZoneInfo("UTC")) - delta
-    return f"after:{threshold.strftime('%Y/%m/%d')}"
+    # Use newer_than: for proper time-granularity (Gmail's after: is day-granular
+    # and returns ALL messages from that day, not just the last N hours)
+    return f"newer_than:{amount}{unit}"
 
 
 def header_map(headers: list[dict[str, Any]] | None) -> dict[str, str]:
