@@ -5,7 +5,9 @@ from pathlib import Path
 from click.testing import CliRunner
 from unittest.mock import MagicMock, patch
 
+from gw import __version__
 from gw.cli import main, run_cli
+from gw.config import DEFAULTS
 from gw.errors import EXIT_AUTH, EXIT_CONFIG, EXIT_GENERAL, GwConfigError
 
 
@@ -63,14 +65,17 @@ def test_root_help_lists_all_subgroups():
 def test_version_flag():
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "0.5.0" in result.output
+    assert __version__ in result.output
 
 
-def test_config_show():
+def test_config_show(tmp_path: Path, monkeypatch):
+    # Isolate from the developer's real ~/.config/gw/config.toml so defaults apply.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
     result = runner.invoke(main, ["config", "show"])
     assert result.exit_code == 0
     assert "timezone" in result.output
-    assert "America/Sao_Paulo" in result.output
+    assert DEFAULTS["timezone"] in result.output
 
 
 def test_config_show_json():

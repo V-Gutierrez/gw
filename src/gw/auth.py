@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import time
 from typing import Any, cast
+from urllib.parse import parse_qs, urlparse
 
 import click
 import httplib2
@@ -43,6 +44,12 @@ DEFAULT_SCOPES = [
 
 RETRY_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
+
+# Google killed the out-of-band (urn:ietf:wg:oauth:2.0:oob) flow in Jan 2023, so a headless
+# login still has to send a loopback redirect_uri — it is just never listened on. The user
+# copies the failed redirect URL out of the browser instead.
+# https://developers.google.com/identity/protocols/oauth2/resources/oob-migration
+HEADLESS_REDIRECT_URI = "http://localhost"
 
 
 def _get_config(profile: str | None = None) -> GWConfig:
@@ -246,12 +253,31 @@ def load_credentials(
     return None
 
 
+def _extract_auth_code(pasted: str) -> str:
+    """Accept either a bare authorization code or the full redirect URL from the browser."""
+    value = pasted.strip()
+    if not value:
+        raise GwAuthError("No authorization code provided.")
+    if "://" not in value:
+        return value
+
+    query = parse_qs(urlparse(value).query)
+    error = query.get("error", [""])[0]
+    if error:
+        raise GwAuthError(f"Google denied the authorization request: {error}")
+    code = query.get("code", [""])[0]
+    if not code:
+        raise GwAuthError("The pasted URL has no 'code' parameter. Copy the full redirect URL.")
+    return code
+
+
 def login(
     scopes: list[str] | None = None,
     client_secrets: Path | None = None,
     token_path: Path | None = None,
     headless: bool = False,
     config: GWConfig | None = None,
+    redirect_uri: str | None = None,
 ) -> Credentials:
     target_scopes = scopes or DEFAULT_SCOPES
     cfg = config or _get_config()
@@ -267,10 +293,18 @@ def login(
 
     flow = InstalledAppFlow.from_client_secrets_file(str(secrets), target_scopes)
     if headless:
+        flow.redirect_uri = redirect_uri or HEADLESS_REDIRECT_URI
         auth_url, _ = flow.authorization_url(prompt="consent")
+        # Instructions go to stderr so stdout stays a clean, pipeable URL.
+        click.echo("Open this URL in any browser and approve access:", err=True)
         click.echo(auth_url)
-        code = click.prompt("Paste the authorization code", type=str).strip()
-        flow.fetch_token(code=code)
+        click.echo(
+            f"The browser will land on {flow.redirect_uri}/?code=... and show a connection "
+            "error. That is expected — copy that URL from the address bar.",
+            err=True,
+        )
+        pasted = click.prompt("Paste the full redirect URL (or just the code)", type=str)
+        flow.fetch_token(code=_extract_auth_code(pasted))
         creds = cast(Credentials, flow.credentials)
     else:
         creds = cast(Credentials, flow.run_local_server(port=0, open_browser=True))
@@ -356,11 +390,18 @@ def setup_auth(*, login_headless: bool = False, config: GWConfig | None = None) 
 def register_auth_commands(auth_group: click.Group) -> None:
     @auth_group.command("login")
     @click.option("--headless", is_flag=True, help="Run OAuth flow without opening a browser.")
+    @click.option(
+        "--redirect-uri",
+        default=None,
+        help=f"Loopback redirect URI for --headless. Defaults to {HEADLESS_REDIRECT_URI}.",
+    )
     @json_option
     @click.pass_context
-    def login_cmd(ctx: click.Context, headless: bool, json_output: bool | None) -> None:
+    def login_cmd(
+        ctx: click.Context, headless: bool, redirect_uri: str | None, json_output: bool | None
+    ) -> None:
         config = cast(GWConfig, ctx.obj["config"])
-        creds = login(headless=headless, config=config)
+        creds = login(headless=headless, config=config, redirect_uri=redirect_uri)
         status = credential_status(creds, config=config)
         status["headless"] = headless
         if use_json_output(ctx, json_output):

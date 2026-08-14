@@ -177,6 +177,10 @@ gw gmail trash 18c0ffee
 gw gmail archive 18c0ffee
 gw gmail label 18c0ffee Work
 gw gmail star 18c0ffee
+gw gmail attachments 18c0ffee --json
+gw gmail download 18c0ffee --dir ~/Downloads
+gw gmail download 18c0ffee --filename invoice.pdf --output ~/Desktop/invoice.pdf
+gw gmail download 18c0ffee --attachment-id ANGjdJ... --dir .
 
 gw drive list --max 20 --json
 gw drive search "report"
@@ -217,6 +221,20 @@ gw doctor --json
 `gw auth setup` guides you through creating or importing OAuth credentials and then logs in.
 `gw doctor` reports the state of credentials, token, authentication, and timezone configuration.
 
+### Headless login
+
+Google removed the out-of-band (OOB) copy/paste flow in January 2023, so a headless login still
+has to send a loopback `redirect_uri` — `gw` uses `http://localhost` and nothing listens on it:
+
+```bash
+gw auth login --headless
+gw auth login --headless --redirect-uri http://127.0.0.1:9000
+```
+
+Open the printed URL in any browser. After you approve, the browser lands on
+`http://localhost/?code=...` and shows a connection error — that is expected. Copy that whole
+URL from the address bar and paste it back. A bare `code` value is accepted too.
+
 ## Shell Completion
 
 ```bash
@@ -231,7 +249,7 @@ gw completion fish | source
 
 Exposed tools:
 
-- `gmail_send`, `gmail_draft`, `gmail_reply`, `gmail_forward`, `gmail_list`, `gmail_search`, `gmail_thread`, `gmail_count`, `gmail_read`, `gmail_trash`, `gmail_archive`, `gmail_label`, `gmail_star`, `gmail_mark_read`, `gmail_mark_unread`
+- `gmail_send`, `gmail_draft`, `gmail_reply`, `gmail_forward`, `gmail_list`, `gmail_search`, `gmail_thread`, `gmail_count`, `gmail_read`, `gmail_attachments`, `gmail_download_attachments`, `gmail_trash`, `gmail_archive`, `gmail_label`, `gmail_star`, `gmail_mark_read`, `gmail_mark_unread`
 - `calendar_today`, `calendar_tomorrow`, `calendar_week`, `calendar_agenda`, `calendar_next`, `calendar_create`, `calendar_list`, `calendar_delete`, `calendar_update`, `meet_create`
 - `contacts_search`, `contacts_list`
 - `drive_list`, `drive_search`, `drive_mkdir`, `drive_share`, `drive_info`, `drive_upload`, `drive_download`

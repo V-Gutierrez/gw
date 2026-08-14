@@ -68,10 +68,22 @@ gw gmail label <message_id> LABEL    # Apply label
 gw gmail star <message_id>           # Star a message
 ```
 
+### Attachments
+```bash
+gw gmail attachments <message_id>              # List attachments (name, mime, size, ID)
+gw gmail download <message_id>                 # Download ALL attachments to cwd
+gw gmail download <message_id> --dir ~/Downloads
+gw gmail download <message_id> --filename invoice.pdf --output ~/Desktop/invoice.pdf
+gw gmail download <message_id> --attachment-id <id> --dir .
+```
+`gw gmail read --json` also lists attachment metadata, so one call is enough to find an ID.
+Inline images (Content-ID parts) count as attachments and are marked `"inline": true`.
+
 ### JSON output
 ```bash
 gw --json gmail list
 gw --json gmail search "from:boss@example.com newer_than:7d"
+gw --json gmail attachments <message_id>
 ```
 
 ---
