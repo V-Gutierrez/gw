@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.5.2 (2026-08-14)
+
+### Features
+- Added `gw gmail attachments <message_id>` to list a message's attachments with filename, MIME type, size, and attachment ID
+- Added `gw gmail download <message_id>` to save attachments to disk — all of them by default, or narrowed with `--attachment-id` / `--filename`, targeted with `--output` / `--dir`
+- `gw gmail read` now returns attachment metadata, so one call is enough to find an attachment ID
+- Added MCP tools `gmail_attachments` and `gmail_download_attachments`
+- Inline images (Content-ID parts) are treated as attachments and flagged `inline: true`; small attachments delivered in `body.data` are decoded locally instead of round-tripping to the API
+
+### Fixes
+- `gw auth login --headless` now sends a loopback `redirect_uri` (`http://localhost`, overridable with `--redirect-uri`). Without it Google rejected the authorization request, because the out-of-band flow this code path assumed was removed in January 2023
+- `--headless` accepts the full pasted redirect URL, not just a bare code, and reports `error=access_denied` instead of failing on token exchange
+- Attachment filenames are reduced to a single path component before writing, so a crafted `../../` filename cannot escape the download directory
+
+### Notes
+- No new OAuth scopes — `gmail.modify` already covers attachment reads, so no re-authentication is needed
+
 ## v0.5.0 (2026-03-27)
 
 ### Features

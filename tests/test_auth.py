@@ -14,6 +14,7 @@ from googleapiclient.errors import HttpError
 
 from gw.auth import (
     DEFAULT_SCOPES,
+    HEADLESS_REDIRECT_URI,
     build_service,
     execute_google_request,
     load_credentials,
@@ -201,12 +202,10 @@ class TestLogin:
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.click.prompt", return_value="auth-code")
-    @patch("gw.auth.click.echo")
     @patch("gw.auth.InstalledAppFlow")
     def test_runs_headless_oauth_flow_and_saves(
         self,
         mock_flow_cls: MagicMock,
-        mock_echo: MagicMock,
         mock_prompt: MagicMock,
         token_path: Path,
         secrets_path: Path,
@@ -221,11 +220,127 @@ class TestLogin:
 
         assert result is mock_creds
         mock_flow.authorization_url.assert_called_once_with(prompt="consent")
-        mock_echo.assert_called_once_with("https://example.com/auth")
-        mock_prompt.assert_called_once_with("Paste the authorization code", type=str)
         mock_flow.fetch_token.assert_called_once_with(code="auth-code")
         mock_flow.run_local_server.assert_not_called()
         assert token_path.exists()
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.click.prompt", return_value="auth-code")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_headless_flow_sets_loopback_redirect_uri(
+        self,
+        mock_flow_cls: MagicMock,
+        mock_prompt: MagicMock,
+        token_path: Path,
+        secrets_path: Path,
+    ) -> None:
+        """Google rejects an authorization request with no redirect_uri (OOB is dead)."""
+        mock_flow = MagicMock()
+        mock_flow.authorization_url.return_value = ("https://example.com/auth", None)
+        mock_flow.credentials = _make_creds(valid=True)
+        mock_flow_cls.from_client_secrets_file.return_value = mock_flow
+
+        login(token_path=token_path, client_secrets=secrets_path, headless=True)
+
+        assert mock_flow.redirect_uri == HEADLESS_REDIRECT_URI
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.click.prompt", return_value="auth-code")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_headless_flow_accepts_custom_redirect_uri(
+        self,
+        mock_flow_cls: MagicMock,
+        mock_prompt: MagicMock,
+        token_path: Path,
+        secrets_path: Path,
+    ) -> None:
+        mock_flow = MagicMock()
+        mock_flow.authorization_url.return_value = ("https://example.com/auth", None)
+        mock_flow.credentials = _make_creds(valid=True)
+        mock_flow_cls.from_client_secrets_file.return_value = mock_flow
+
+        login(
+            token_path=token_path,
+            client_secrets=secrets_path,
+            headless=True,
+            redirect_uri="http://127.0.0.1:8765",
+        )
+
+        assert mock_flow.redirect_uri == "http://127.0.0.1:8765"
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.click.prompt")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_headless_flow_accepts_pasted_redirect_url(
+        self,
+        mock_flow_cls: MagicMock,
+        mock_prompt: MagicMock,
+        token_path: Path,
+        secrets_path: Path,
+    ) -> None:
+        mock_prompt.return_value = "http://localhost/?state=xyz&code=4/pasted-code&scope=email"
+        mock_flow = MagicMock()
+        mock_flow.authorization_url.return_value = ("https://example.com/auth", None)
+        mock_flow.credentials = _make_creds(valid=True)
+        mock_flow_cls.from_client_secrets_file.return_value = mock_flow
+
+        login(token_path=token_path, client_secrets=secrets_path, headless=True)
+
+        mock_flow.fetch_token.assert_called_once_with(code="4/pasted-code")
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.click.prompt", return_value="http://localhost/?error=access_denied")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_headless_flow_reports_denied_authorization(
+        self,
+        mock_flow_cls: MagicMock,
+        mock_prompt: MagicMock,
+        token_path: Path,
+        secrets_path: Path,
+    ) -> None:
+        mock_flow = MagicMock()
+        mock_flow.authorization_url.return_value = ("https://example.com/auth", None)
+        mock_flow_cls.from_client_secrets_file.return_value = mock_flow
+
+        with pytest.raises(GwAuthError) as excinfo:
+            login(token_path=token_path, client_secrets=secrets_path, headless=True)
+
+        assert "access_denied" in str(excinfo.value)
+        mock_flow.fetch_token.assert_not_called()
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.click.prompt", return_value="http://localhost/?state=xyz")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_headless_flow_rejects_url_without_code(
+        self,
+        mock_flow_cls: MagicMock,
+        mock_prompt: MagicMock,
+        token_path: Path,
+        secrets_path: Path,
+    ) -> None:
+        mock_flow = MagicMock()
+        mock_flow.authorization_url.return_value = ("https://example.com/auth", None)
+        mock_flow_cls.from_client_secrets_file.return_value = mock_flow
+
+        with pytest.raises(GwAuthError):
+            login(token_path=token_path, client_secrets=secrets_path, headless=True)
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.click.prompt", return_value="   ")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_headless_flow_rejects_blank_input(
+        self,
+        mock_flow_cls: MagicMock,
+        mock_prompt: MagicMock,
+        token_path: Path,
+        secrets_path: Path,
+    ) -> None:
+        mock_flow = MagicMock()
+        mock_flow.authorization_url.return_value = ("https://example.com/auth", None)
+        mock_flow_cls.from_client_secrets_file.return_value = mock_flow
+
+        with pytest.raises(GwAuthError):
+            login(token_path=token_path, client_secrets=secrets_path, headless=True)
 
 
 class TestLogout:
@@ -477,7 +592,9 @@ class TestCLICommands:
 
         assert result.exit_code == 0
         assert "Authenticated" in result.output
-        mock_login.assert_called_once_with(headless=False, config=auth_config)
+        mock_login.assert_called_once_with(
+            headless=False, config=auth_config, redirect_uri=None
+        )
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.login")
@@ -493,7 +610,29 @@ class TestCLICommands:
         result = runner.invoke(auth_group, ["login", "--headless"], obj={"config": auth_config})
 
         assert result.exit_code == 0
-        mock_login.assert_called_once_with(headless=True, config=auth_config)
+        mock_login.assert_called_once_with(headless=True, config=auth_config, redirect_uri=None)
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.login")
+    def test_login_command_headless_with_custom_redirect_uri(
+        self,
+        mock_login: MagicMock,
+        runner: CliRunner,
+        auth_group,
+        auth_config: SimpleNamespace,
+    ) -> None:
+        mock_login.return_value = _make_creds(valid=True)
+
+        result = runner.invoke(
+            auth_group,
+            ["login", "--headless", "--redirect-uri", "http://127.0.0.1:9000"],
+            obj={"config": auth_config},
+        )
+
+        assert result.exit_code == 0
+        mock_login.assert_called_once_with(
+            headless=True, config=auth_config, redirect_uri="http://127.0.0.1:9000"
+        )
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.load_credentials")

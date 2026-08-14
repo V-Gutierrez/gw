@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from email.mime.text import MIMEText
+from pathlib import Path
 from typing import Any
 
 import click
@@ -9,7 +10,16 @@ import click
 from gw.auth import build_service, execute_google_request
 from gw.config import GWConfig
 from gw.output import json_option, print_human, print_json, print_success, use_json_output
-from gw.utils import clean_message_body, extract_message_body, header_map, parse_after_flag
+from gw.utils import (
+    atomic_write,
+    clean_message_body,
+    decode_base64url_bytes,
+    extract_attachments,
+    extract_message_body,
+    header_map,
+    parse_after_flag,
+    safe_attachment_filename,
+)
 
 
 def _gmail_service(config: GWConfig | None = None):
@@ -55,6 +65,20 @@ def _render_thread(thread: dict[str, Any]) -> None:
         print_human(f"    From: {message['from']}")
         print_human(f"    Subject: {message['subject']}")
         print_human(f"    Body: {message['body']}")
+
+
+def _render_attachments(data: dict[str, Any]) -> None:
+    attachments = data.get("attachments", [])
+    if not attachments:
+        print_human(f"No attachments in message {data['message_id']}.", emoji="📎")
+        return
+
+    print_human(f"Attachments ({len(attachments)}) — {data.get('subject', '')}:", emoji="📎")
+    for attachment in attachments:
+        kind = "inline" if attachment["inline"] else "attachment"
+        print_human(f"  • {attachment['filename']} ({attachment['mime_type']}, {kind})")
+        print_human(f"    Size: {attachment['size']} bytes")
+        print_human(f"    ID: {attachment['attachment_id'] or '(inline body data)'}")
 
 
 def _modify_gmail_labels(
@@ -275,9 +299,138 @@ def read_gmail_messages(
                 "from": headers.get("from", ""),
                 "date": headers.get("date", ""),
                 "body": body or "(No plain text body — HTML only email)",
+                "attachments": extract_attachments(message.get("payload")),
             }
         )
     return messages
+
+
+def list_gmail_attachments(message_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = _gmail_service(config)
+    message = execute_google_request(
+        service.users().messages().get(userId="me", id=message_id, format="full")
+    )
+    headers = _message_headers(message)
+    attachments = extract_attachments(message.get("payload"))
+    return {
+        "message_id": message.get("id", message_id),
+        "thread_id": message.get("threadId"),
+        "subject": headers.get("subject", ""),
+        "from": headers.get("from", ""),
+        "date": headers.get("date", ""),
+        "count": len(attachments),
+        "attachments": attachments,
+    }
+
+
+def _fetch_attachment_bytes(service: Any, message_id: str, attachment: dict[str, Any]) -> bytes:
+    attachment_id = attachment.get("attachment_id")
+    if attachment_id:
+        payload = execute_google_request(
+            service.users()
+            .messages()
+            .attachments()
+            .get(userId="me", messageId=message_id, id=attachment_id)
+        )
+        data = payload.get("data")
+    else:
+        data = attachment.get("data")
+
+    if not data:
+        raise click.ClickException(
+            f"Attachment {attachment['filename']!r} carries no downloadable data."
+        )
+    return decode_base64url_bytes(data)
+
+
+def _unique_filename(name: str, used: set[str]) -> str:
+    candidate = Path(name)
+    stem, suffix = candidate.stem, candidate.suffix
+    unique = name
+    counter = 2
+    while unique in used:
+        unique = f"{stem}-{counter}{suffix}"
+        counter += 1
+    used.add(unique)
+    return unique
+
+
+def _select_attachments(
+    attachments: list[dict[str, Any]],
+    message_id: str,
+    attachment_id: str | None,
+    filename: str | None,
+) -> list[dict[str, Any]]:
+    selected = attachments
+    if attachment_id:
+        selected = [item for item in selected if item["attachment_id"] == attachment_id]
+        if not selected:
+            raise click.ClickException(
+                f"No attachment with ID {attachment_id!r} in message {message_id!r}."
+            )
+    if filename:
+        matches = [item for item in selected if item["filename"] == filename]
+        if not matches:
+            lowered = filename.lower()
+            matches = [item for item in selected if item["filename"].lower() == lowered]
+        if not matches:
+            raise click.ClickException(
+                f"No attachment named {filename!r} in message {message_id!r}."
+            )
+        selected = matches
+    return selected
+
+
+def download_gmail_attachments(
+    message_id: str,
+    attachment_id: str | None = None,
+    filename: str | None = None,
+    output_path: str | None = None,
+    directory: str | None = None,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _gmail_service(config)
+    message = execute_google_request(
+        service.users().messages().get(userId="me", id=message_id, format="full")
+    )
+    attachments = extract_attachments(message.get("payload"), include_data=True)
+    if not attachments:
+        raise click.ClickException(f"Message {message_id!r} has no attachments.")
+
+    selected = _select_attachments(attachments, message_id, attachment_id, filename)
+    if output_path and len(selected) > 1:
+        raise click.ClickException(
+            f"--output expects a single attachment but {len(selected)} matched. "
+            "Narrow it with --attachment-id or --filename, or use --dir."
+        )
+
+    base_dir = Path(directory).expanduser() if directory else Path.cwd()
+    used: set[str] = set()
+    downloaded: list[dict[str, Any]] = []
+    for index, attachment in enumerate(selected, start=1):
+        data = _fetch_attachment_bytes(service, message_id, attachment)
+        if output_path:
+            target = Path(output_path).expanduser()
+        else:
+            safe_name = safe_attachment_filename(attachment["filename"], f"attachment-{index}.bin")
+            target = base_dir / _unique_filename(safe_name, used)
+        atomic_write(target, data)
+        downloaded.append(
+            {
+                "attachment_id": attachment["attachment_id"],
+                "filename": attachment["filename"],
+                "mime_type": attachment["mime_type"],
+                "inline": attachment["inline"],
+                "path": str(target),
+                "size": len(data),
+            }
+        )
+
+    return {
+        "message_id": message.get("id", message_id),
+        "count": len(downloaded),
+        "attachments": downloaded,
+    }
 
 
 def search_gmail_messages(
@@ -621,6 +774,63 @@ def register_gmail_commands(group: click.Group) -> None:
                 print_human(f"Date: {message['date']}")
                 print_human("=" * 60)
                 print_human(message["body"])
+
+    @group.command("attachments")
+    @click.argument("message_id")
+    @json_option
+    @click.pass_context
+    def attachments_command(ctx: click.Context, message_id: str, json_output: bool | None) -> None:
+        """List the attachments carried by a message."""
+        data = list_gmail_attachments(message_id=message_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            _render_attachments(data)
+
+    @group.command("download")
+    @click.argument("message_id")
+    @click.option("--attachment-id", default=None, help="Download only this attachment ID.")
+    @click.option("--filename", default=None, help="Download only the attachment with this name.")
+    @click.option(
+        "--output",
+        "output_path",
+        default=None,
+        type=click.Path(dir_okay=False),
+        help="Write a single attachment to this exact path.",
+    )
+    @click.option(
+        "--dir",
+        "directory",
+        default=None,
+        type=click.Path(file_okay=False),
+        help="Directory to save into. Defaults to the current directory.",
+    )
+    @json_option
+    @click.pass_context
+    def download_command(
+        ctx: click.Context,
+        message_id: str,
+        attachment_id: str | None,
+        filename: str | None,
+        output_path: str | None,
+        directory: str | None,
+        json_output: bool | None,
+    ) -> None:
+        """Download attachments from a message. Downloads all of them by default."""
+        data = download_gmail_attachments(
+            message_id=message_id,
+            attachment_id=attachment_id,
+            filename=filename,
+            output_path=output_path,
+            directory=directory,
+            config=ctx.obj["config"],
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Downloaded {data['count']} attachment(s):")
+            for attachment in data["attachments"]:
+                print_human(f"  • {attachment['path']} ({attachment['size']} bytes)")
 
     @group.command("trash")
     @click.argument("message_id")

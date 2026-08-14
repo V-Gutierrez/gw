@@ -35,9 +35,11 @@ from gw.services.gmail import (
     archive_gmail_message,
     count_gmail_messages,
     create_gmail_draft,
+    download_gmail_attachments,
     forward_gmail_message,
     get_gmail_thread,
     label_gmail_message,
+    list_gmail_attachments,
     list_gmail_messages,
     mark_gmail_read,
     mark_gmail_unread,
@@ -130,6 +132,31 @@ def gmail_read(
         message_id=message_id,
         query=query,
         max_results=max_results,
+        config=_config(),
+    )
+
+
+@mcp_server.tool()
+def gmail_attachments(message_id: str) -> dict:
+    """List the attachments of a Gmail message, with their IDs, names, and sizes."""
+    return list_gmail_attachments(message_id=message_id, config=_config())
+
+
+@mcp_server.tool()
+def gmail_download_attachments(
+    message_id: str,
+    attachment_id: str | None = None,
+    filename: str | None = None,
+    output_path: str | None = None,
+    directory: str | None = None,
+) -> dict:
+    """Download attachments from a Gmail message to disk. Downloads all of them by default."""
+    return download_gmail_attachments(
+        message_id=message_id,
+        attachment_id=attachment_id,
+        filename=filename,
+        output_path=output_path,
+        directory=directory,
         config=_config(),
     )
 
