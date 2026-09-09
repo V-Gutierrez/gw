@@ -58,6 +58,9 @@ def list_drive_files(
             pageSize=max_results,
             orderBy="modifiedTime desc",
             fields="files(id, name, mimeType, modifiedTime)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            corpora="allDrives",
         )
     )
     return response.get("files", [])
@@ -107,6 +110,9 @@ def search_drive_files(
             pageSize=max_results,
             orderBy="modifiedTime desc",
             fields="files(id, name, mimeType, modifiedTime)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            corpora="allDrives",
         )
     )
     return response.get("files", [])
@@ -151,7 +157,9 @@ def download_drive_file(
 ) -> dict[str, Any]:
     service = _drive_service(config)
     metadata = execute_google_request(
-        service.files().get(fileId=file_id, fields="id,name,mimeType,size")
+        service.files().get(
+            fileId=file_id, fields="id,name,mimeType,size", supportsAllDrives=True
+        )
     )
     name = metadata.get("name", file_id)
     mime_type = metadata.get("mimeType", "application/octet-stream")
@@ -173,7 +181,7 @@ def download_drive_file(
     else:
         if export_format is not None:
             raise click.ClickException("--format is only supported for Google-native Drive files.")
-        request = service.files().get_media(fileId=file_id)
+        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
 
     data = _download_request_bytes(request)
     target = (
@@ -253,6 +261,7 @@ def get_drive_file_info(
         service.files().get(
             fileId=file_id,
             fields="id,name,mimeType,size,createdTime,modifiedTime,owners,webViewLink,shared,fileExtension,description",
+            supportsAllDrives=True,
         )
     )
     return {
