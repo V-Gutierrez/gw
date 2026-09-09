@@ -374,7 +374,496 @@ def get_drive_file_info(
     }
 
 
+def copy_drive_file(
+    file_id: str,
+    name: str | None = None,
+    folder: str | None = None,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Duplicate a file. The original is untouched."""
+    service = _drive_service(config)
+    body: dict[str, Any] = {}
+    if name:
+        body["name"] = name
+    if folder:
+        body["parents"] = [folder]
+    copied = execute_google_request(
+        service.files().copy(
+            fileId=file_id,
+            body=body,
+            fields="id,name,mimeType,webViewLink",
+            supportsAllDrives=True,
+        )
+    )
+    return {
+        "id": copied.get("id"),
+        "name": copied.get("name"),
+        "mime_type": copied.get("mimeType"),
+        "web_view_link": copied.get("webViewLink"),
+        "copied_from": file_id,
+    }
+
+
+def move_drive_file(
+    file_id: str,
+    folder: str,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Move a file into another folder.
+
+    Drive files can have several parents, so adding one without removing the old
+    ones would leave the file showing up in both places. gw reads the current
+    parents and swaps them out.
+    """
+    service = _drive_service(config)
+    current = execute_google_request(
+        service.files().get(fileId=file_id, fields="id,name,parents", supportsAllDrives=True)
+    )
+    parents = current.get("parents") or []
+    if not parents:
+        raise click.ClickException(
+            f"File {file_id} has no parent folder to move it out of "
+            "(it may be a shared drive root or shared with you only)."
+        )
+
+    updated = execute_google_request(
+        service.files().update(
+            fileId=file_id,
+            addParents=folder,
+            removeParents=",".join(parents),
+            fields="id,name,parents,webViewLink",
+            supportsAllDrives=True,
+        )
+    )
+    return {
+        "id": updated.get("id", file_id),
+        "name": updated.get("name", current.get("name")),
+        "moved_from": parents,
+        "moved_to": folder,
+        "web_view_link": updated.get("webViewLink"),
+    }
+
+
+def get_drive_about(config: GWConfig | None = None) -> dict[str, Any]:
+    """Report the account's storage quota."""
+    service = _drive_service(config)
+    about = execute_google_request(
+        service.about().get(fields="user(displayName,emailAddress),storageQuota")
+    )
+    quota = about.get("storageQuota", {})
+    limit = int(quota["limit"]) if quota.get("limit") else None
+    usage = int(quota.get("usage", 0))
+    return {
+        "email": about.get("user", {}).get("emailAddress"),
+        "name": about.get("user", {}).get("displayName"),
+        "limit": limit,
+        "usage": usage,
+        "usage_in_drive": int(quota.get("usageInDrive", 0)),
+        "percent_used": round(usage / limit * 100, 1) if limit else None,
+    }
+
+
+def list_drive_revisions(
+    file_id: str,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    service = _drive_service(config)
+    response = execute_google_request(
+        service.revisions().list(
+            fileId=file_id,
+            fields="revisions(id,modifiedTime,lastModifyingUser,size,keepForever)",
+        )
+    )
+    return [
+        {
+            "id": revision.get("id"),
+            "modified_time": revision.get("modifiedTime"),
+            "modified_by": revision.get("lastModifyingUser", {}).get("displayName", ""),
+            "size": int(revision["size"]) if revision.get("size") else None,
+            "keep_forever": revision.get("keepForever", False),
+        }
+        for revision in response.get("revisions", [])
+    ]
+
+
+def delete_drive_revision(
+    file_id: str,
+    revision_id: str,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _drive_service(config)
+    execute_google_request(
+        service.revisions().delete(fileId=file_id, revisionId=revision_id)
+    )
+    return {"file_id": file_id, "revision_id": revision_id, "deleted": True}
+
+
+def list_drive_comments(
+    file_id: str,
+    include_resolved: bool = False,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    """List comments on a file.
+
+    Drive returns almost nothing here unless ``fields`` names what you want, so
+    the field list is mandatory rather than optional.
+    """
+    service = _drive_service(config)
+    response = execute_google_request(
+        service.comments().list(
+            fileId=file_id,
+            fields=(
+                "comments(id,content,author(displayName),createdTime,resolved,"
+                "replies(id,content,author(displayName),createdTime))"
+            ),
+            includeDeleted=False,
+        )
+    )
+    comments = []
+    for comment in response.get("comments", []):
+        if comment.get("resolved") and not include_resolved:
+            continue
+        comments.append(
+            {
+                "id": comment.get("id"),
+                "content": comment.get("content", ""),
+                "author": comment.get("author", {}).get("displayName", ""),
+                "created_time": comment.get("createdTime"),
+                "resolved": comment.get("resolved", False),
+                "replies": [
+                    {
+                        "id": reply.get("id"),
+                        "content": reply.get("content", ""),
+                        "author": reply.get("author", {}).get("displayName", ""),
+                    }
+                    for reply in comment.get("replies", [])
+                ],
+            }
+        )
+    return comments
+
+
+def add_drive_comment(
+    file_id: str,
+    content: str,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _drive_service(config)
+    comment = execute_google_request(
+        service.comments().create(
+            fileId=file_id,
+            body={"content": content},
+            fields="id,content,author(displayName),createdTime",
+        )
+    )
+    return {
+        "id": comment.get("id"),
+        "content": comment.get("content", content),
+        "author": comment.get("author", {}).get("displayName", ""),
+        "file_id": file_id,
+    }
+
+
+def reply_to_drive_comment(
+    file_id: str,
+    comment_id: str,
+    content: str,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _drive_service(config)
+    reply = execute_google_request(
+        service.replies().create(
+            fileId=file_id,
+            commentId=comment_id,
+            body={"content": content},
+            fields="id,content,author(displayName)",
+        )
+    )
+    return {
+        "id": reply.get("id"),
+        "content": reply.get("content", content),
+        "comment_id": comment_id,
+        "file_id": file_id,
+    }
+
+
+def resolve_drive_comment(
+    file_id: str,
+    comment_id: str,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Resolve a comment thread.
+
+    Drive has no 'resolve' verb: a thread is resolved by posting a reply whose
+    action is ``resolve``.
+    """
+    service = _drive_service(config)
+    execute_google_request(
+        service.replies().create(
+            fileId=file_id,
+            commentId=comment_id,
+            body={"action": "resolve"},
+            fields="id,action",
+        )
+    )
+    return {"file_id": file_id, "comment_id": comment_id, "resolved": True}
+
+
+def list_drive_permissions(
+    file_id: str,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    """Show who has access to a file."""
+    service = _drive_service(config)
+    response = execute_google_request(
+        service.permissions().list(
+            fileId=file_id,
+            fields="permissions(id,emailAddress,role,type,displayName)",
+            supportsAllDrives=True,
+        )
+    )
+    return [
+        {
+            "id": permission.get("id"),
+            "email": permission.get("emailAddress", ""),
+            "name": permission.get("displayName", ""),
+            "role": permission.get("role"),
+            "type": permission.get("type"),
+        }
+        for permission in response.get("permissions", [])
+    ]
+
+
+def list_shared_drives(
+    max_results: int = 50,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    service = _drive_service(config)
+    response = execute_google_request(
+        service.drives().list(pageSize=max_results, fields="drives(id,name,createdTime)")
+    )
+    return [
+        {
+            "id": drive.get("id"),
+            "name": drive.get("name"),
+            "created_time": drive.get("createdTime"),
+        }
+        for drive in response.get("drives", [])
+    ]
+
+
+def _human_bytes(value: int | None) -> str:
+    if value is None:
+        return "unlimited"
+    size = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
 def register_drive_commands(group: click.Group) -> None:
+    @group.command("copy")
+    @click.argument("file_id")
+    @click.option("--name", default=None, help="Name for the copy.")
+    @click.option("--folder", default=None, help="Folder ID to put the copy in.")
+    @json_option
+    @click.pass_context
+    def copy_command(
+        ctx: click.Context,
+        file_id: str,
+        name: str | None,
+        folder: str | None,
+        json_output: bool | None,
+    ) -> None:
+        """Duplicate a file. The original is untouched."""
+        data = copy_drive_file(file_id, name=name, folder=folder, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Copied to {data['name']} ({data['id']})")
+
+    @group.command("move")
+    @click.argument("file_id")
+    @click.argument("folder")
+    @json_option
+    @click.pass_context
+    def move_command(
+        ctx: click.Context, file_id: str, folder: str, json_output: bool | None
+    ) -> None:
+        """Move a file into another folder."""
+        data = move_drive_file(file_id, folder=folder, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Moved {data['name']} to folder {folder}.")
+
+    @group.command("about")
+    @json_option
+    @click.pass_context
+    def about_command(ctx: click.Context, json_output: bool | None) -> None:
+        """Show the account's Drive storage quota."""
+        data = get_drive_about(config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_human(f"Drive: {data['email']}", emoji="💾")
+            used = _human_bytes(data["usage"])
+            limit = _human_bytes(data["limit"])
+            percent = f" ({data['percent_used']}%)" if data["percent_used"] is not None else ""
+            print_human(f"  Used: {used} of {limit}{percent}")
+
+    @group.command("revisions")
+    @click.argument("file_id")
+    @json_option
+    @click.pass_context
+    def revisions_command(ctx: click.Context, file_id: str, json_output: bool | None) -> None:
+        """List a file's version history."""
+        data = list_drive_revisions(file_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        elif not data:
+            print_human("No revisions found.", emoji="🕓")
+        else:
+            print_human(f"Revisions ({len(data)}):", emoji="🕓")
+            for revision in data:
+                size = _human_bytes(revision["size"]) if revision["size"] else "—"
+                print_human(
+                    f"  • {revision['modified_time']} — {revision['modified_by']} ({size})"
+                )
+                print_human(f"    ID: {revision['id']}")
+
+    @group.command("revision-delete")
+    @click.argument("file_id")
+    @click.argument("revision_id")
+    @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation.")
+    @json_option
+    @click.pass_context
+    def revision_delete_command(
+        ctx: click.Context,
+        file_id: str,
+        revision_id: str,
+        yes: bool,
+        json_output: bool | None,
+    ) -> None:
+        """Delete one revision from a file's history. Cannot be undone."""
+        if not yes:
+            click.confirm(f"Delete revision {revision_id}? This cannot be undone.", abort=True)
+        data = delete_drive_revision(file_id, revision_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Revision {revision_id} deleted.")
+
+    @group.command("comments")
+    @click.argument("file_id")
+    @click.option("--include-resolved", is_flag=True, help="Also show resolved threads.")
+    @json_option
+    @click.pass_context
+    def comments_command(
+        ctx: click.Context, file_id: str, include_resolved: bool, json_output: bool | None
+    ) -> None:
+        """List the comments on a file."""
+        data = list_drive_comments(
+            file_id, include_resolved=include_resolved, config=ctx.obj["config"]
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        elif not data:
+            print_human("No comments found.", emoji="💬")
+        else:
+            print_human(f"Comments ({len(data)}):", emoji="💬")
+            for comment in data:
+                mark = " [resolved]" if comment["resolved"] else ""
+                print_human(f"  • {comment['author']}{mark}: {comment['content']}")
+                print_human(f"    ID: {comment['id']}")
+                for reply in comment["replies"]:
+                    print_human(f"      ↳ {reply['author']}: {reply['content']}")
+
+    @group.command("comment")
+    @click.argument("file_id")
+    @click.argument("content")
+    @json_option
+    @click.pass_context
+    def comment_command(
+        ctx: click.Context, file_id: str, content: str, json_output: bool | None
+    ) -> None:
+        """Add a comment to a file."""
+        data = add_drive_comment(file_id, content, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Comment added ({data['id']}).")
+
+    @group.command("comment-reply")
+    @click.argument("file_id")
+    @click.argument("comment_id")
+    @click.argument("content")
+    @json_option
+    @click.pass_context
+    def comment_reply_command(
+        ctx: click.Context,
+        file_id: str,
+        comment_id: str,
+        content: str,
+        json_output: bool | None,
+    ) -> None:
+        """Reply to a comment thread."""
+        data = reply_to_drive_comment(file_id, comment_id, content, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Replied to comment {comment_id}.")
+
+    @group.command("comment-resolve")
+    @click.argument("file_id")
+    @click.argument("comment_id")
+    @json_option
+    @click.pass_context
+    def comment_resolve_command(
+        ctx: click.Context, file_id: str, comment_id: str, json_output: bool | None
+    ) -> None:
+        """Mark a comment thread as resolved."""
+        data = resolve_drive_comment(file_id, comment_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Comment {comment_id} resolved.")
+
+    @group.command("permissions")
+    @click.argument("file_id")
+    @json_option
+    @click.pass_context
+    def permissions_command(ctx: click.Context, file_id: str, json_output: bool | None) -> None:
+        """Show who has access to a file."""
+        data = list_drive_permissions(file_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        elif not data:
+            print_human("No permissions found.", emoji="🔐")
+        else:
+            print_human(f"Permissions ({len(data)}):", emoji="🔐")
+            for permission in data:
+                who = permission["email"] or permission["name"] or permission["type"]
+                print_human(f"  • {who} — {permission['role']}")
+
+    @group.command("drives")
+    @click.option("--max", "max_results", default=50, type=int, show_default=True)
+    @json_option
+    @click.pass_context
+    def drives_command(ctx: click.Context, max_results: int, json_output: bool | None) -> None:
+        """List the shared drives you can reach."""
+        data = list_shared_drives(max_results=max_results, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        elif not data:
+            print_human("No shared drives found.", emoji="🗂️")
+        else:
+            print_human(f"Shared drives ({len(data)}):", emoji="🗂️")
+            for drive in data:
+                print_human(f"  • {drive['name']} — {drive['id']}")
+
     @group.command("list")
     @click.option("--max", "max_results", default=10, type=int, show_default=True)
     @json_option
