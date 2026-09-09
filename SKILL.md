@@ -99,6 +99,32 @@ Notes:
   `gw gmail download <id>` first, then pass them with `--attachment`.
 - Attachments are not exposed through the MCP server yet (see `mcp_server.py`).
 
+### Drafts
+
+```bash
+gw gmail drafts                      # List drafts WITH their draft IDs
+gw gmail draft-read <draft_id>       # Show a draft's current content
+gw gmail draft-send <draft_id>       # Send that draft
+gw gmail draft-delete <draft_id>     # Delete it (asks to confirm)
+```
+
+**Editing a draft** — only the fields you pass change:
+
+```bash
+gw gmail draft-edit <draft_id> --subject "New subject"
+gw gmail draft-edit <draft_id> --body-file /tmp/v2.txt
+gw gmail draft-edit <draft_id> --attachment new.pdf    # REPLACES the whole set
+gw gmail draft-edit <draft_id> --clear-attachments     # drops every attachment
+```
+
+Notes:
+- Use the **draft ID**, not the message ID. Gmail changes the message ID on every
+  edit; the draft ID is stable.
+- `drafts.update` replaces the whole message, so gw reads the draft back and
+  re-sends the parts you did not touch. Attachment bytes survive unchanged.
+- `--attachment` means "the attachments are now exactly these", the same rule as
+  `--attendees` on `gw calendar update`. Omit it to keep what is there.
+
 ### Manage
 ```bash
 gw gmail mark-read <message_id>      # Mark as read
@@ -109,6 +135,30 @@ gw gmail label <message_id> LABEL    # Apply label
 gw gmail label <message_id> LABEL --remove   # Remove label
 gw gmail star <message_id>           # Star a message
 gw gmail star <message_id> --remove  # Unstar a message
+gw gmail untrash <message_id>        # Restore from trash
+```
+
+### Whole threads and bulk changes
+
+```bash
+gw gmail thread-archive <thread_id>            # Archive the whole conversation
+gw gmail thread-trash <thread_id>              # Trash it (asks to confirm)
+gw gmail thread-untrash <thread_id>
+gw gmail thread-label <thread_id> LABEL [--remove]
+
+# One API call for every message matching the query, not one per message
+gw gmail bulk --query "from:newsletter@x.com older_than:1y" --archive
+gw gmail bulk --query "is:unread label:promo" --mark-read --max 500
+gw gmail bulk --query "from:x@y.com" --label "Seguros" --yes
+```
+
+`bulk` asks to confirm unless you pass `--yes`, and refuses to run with no action flag.
+
+### Mailbox introspection
+
+```bash
+gw gmail profile                     # Address, message/thread totals, history ID
+gw gmail history --since <history_id>   # Changes since that point
 ```
 
 ### Attachments
@@ -178,6 +228,32 @@ gw meet create --title "Team Sync"   # Custom instant meeting title
 pass every guest you want to keep. Google only emails guests when you pass
 `--send-updates all` (or `externalOnly`); the default is `none`, so nothing is sent.
 
+### Scheduling, recurrence and moving
+
+```bash
+# When is each person busy? The scheduling primitive.
+gw calendar freebusy ana@x.com bob@x.com --start 2026-09-10 --end 2026-09-11
+
+# Let Google parse the phrase
+gw calendar quick-add "Lunch with Ana tomorrow at 1pm"
+
+# Move an event to another calendar; it keeps its ID
+gw calendar move <event_id> <destination_calendar_id>
+
+# Expand a recurring event into its real occurrences
+gw calendar instances <event_id> --max 10
+```
+
+### Calendars themselves, and who can see them
+
+```bash
+gw calendar create-calendar "Projects" [--timezone Europe/Lisbon]
+gw calendar delete-calendar <calendar_id>       # asks to confirm; deletes its events
+gw calendar acl [--calendar <id>]               # who has access
+gw calendar share ana@x.com --role reader       # reader|writer|owner|freeBusyReader
+gw calendar unshare ana@x.com                   # asks to confirm
+```
+
 ### JSON output
 ```bash
 gw --json calendar today --all
@@ -209,6 +285,32 @@ gw drive info <file_id>              # Show metadata
 `delete` trashes by default because that is recoverable. `--permanent` cannot be
 undone. `list`, `search`, `download` and `info` include files in shared drives.
 
+### Copy, move, quota and shared drives
+
+```bash
+gw drive copy <file_id> [--name "Copy"] [--folder <folder_id>]
+gw drive move <file_id> <folder_id>   # swaps the parent, no ghost second copy
+gw drive about                        # storage quota
+gw drive drives                       # shared drives you can reach
+gw drive permissions <file_id>        # who currently has access
+```
+
+A Drive file can have several parents, so `move` reads the current ones and
+removes them. Adding a parent without removing the old leaves the file in both
+folders — that is why there is a `move` command and not just a flag.
+
+### Version history and comments
+
+```bash
+gw drive revisions <file_id>                       # version history
+gw drive revision-delete <file_id> <revision_id>   # asks to confirm
+
+gw drive comments <file_id> [--include-resolved]
+gw drive comment <file_id> "text"
+gw drive comment-reply <file_id> <comment_id> "text"
+gw drive comment-resolve <file_id> <comment_id>
+```
+
 ### JSON output
 ```bash
 gw --json drive list
@@ -223,8 +325,26 @@ gw --json drive search "report 2026"
 gw sheets read <spreadsheet_id> <range>     # Read cells
 gw sheets read "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms" "Sheet1!A1:D20"
 
-gw sheets write <spreadsheet_id> <range> <values>  # Write cells
-gw sheets write "spreadsheet_id" "Sheet1!A1" '[["Hello", "World"]]'
+gw sheets write <spreadsheet_id> <range> <value>   # Write ONE cell
+gw sheets write "spreadsheet_id" "Sheet1!A1" "Hello"
+```
+
+> `write` sets a **single cell** — the VALUE is written literally. Earlier versions
+> of this file showed `'[["Hello", "World"]]'`, which would put that JSON text into
+> A1 as a string. To write rows, use `append`.
+
+### Rows, tabs and new spreadsheets
+
+```bash
+# append: JSON list = one row, list of lists = several, plain text = one cell
+gw sheets append <id> "Sheet1!A:C" '["ana", 10, "pago"]'
+gw sheets append <id> "Sheet1!A:B" '[["a", 1], ["b", 2]]'
+
+gw sheets clear <id> "Sheet1!A2:C99"     # clears values, keeps formatting
+gw sheets create "Budget" [--sheet Jan --sheet Feb]
+gw sheets info <id>                      # tab names, sheet IDs, dimensions
+gw sheets add-tab <id> "March"
+gw sheets delete-tab <id> "March"        # asks to confirm
 ```
 
 ### JSON output
@@ -287,10 +407,15 @@ gw --json tasks add "Prepare review" --due 2026-04-02
 ## Diagnostics & Config
 
 ```bash
-gw doctor                            # Check auth, API access, config
+gw doctor                            # Check auth, config AND every Google API
 gw config show                       # Show current config.toml contents
 gw --version                         # Show installed version
 ```
+
+`gw doctor` makes one real call per API, so it catches an API that is switched off
+in the Google Cloud project — a failure that otherwise only shows up as a 403 the
+first time you use that service. It names the API and prints the console URL to
+enable it.
 
 ---
 

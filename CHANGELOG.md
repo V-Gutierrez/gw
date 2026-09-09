@@ -1,5 +1,74 @@
 # Changelog
 
+## v0.7.0 (2026-09-09)
+
+Coverage release: 57 commands to 98. Gmail, Calendar, Drive and Sheets now cover
+the API surface a personal CLI actually needs.
+
+### Gmail — drafts became editable
+- `gw gmail drafts` lists drafts with their draft IDs. Until now `gw gmail draft`
+  returned an ID and the draft was unreachable from the CLI forever
+- `gw gmail draft-read`, `draft-edit`, `draft-send`, `draft-delete`
+- `draft-edit` changes only the fields you pass. `drafts.update` is a full PUT, so
+  gw reads the draft back, applies your changes and re-sends the rest untouched.
+  `--attachment` replaces the whole attachment set (same rule as `--attendees` on
+  `calendar update`), omitting it keeps the existing files, `--clear-attachments`
+  drops them. Verified against the live API: attachment bytes survive an edit
+  unchanged, and the draft ID is stable across updates while the message ID is not
+
+### Gmail — threads, bulk and introspection
+- `thread-trash`, `thread-untrash`, `thread-archive`, `thread-label` act on a whole
+  conversation instead of one message at a time
+- `gw gmail bulk --query "..."` applies one change to every match in a single
+  `batchModify` call rather than one request per message
+- `gw gmail untrash` restores a message
+- `gw gmail profile` and `gw gmail history --since <id>`
+
+### Calendar
+- `gw calendar freebusy EMAIL...` — when is each person busy in a window
+- `gw calendar quick-add "lunch with Ana tomorrow 1pm"` — Google parses the phrase
+- `gw calendar move EVENT_ID DESTINATION` — move an event between calendars
+- `gw calendar instances EVENT_ID` — expand a recurring event into its occurrences
+- `gw calendar create-calendar` / `delete-calendar`
+- `gw calendar acl` / `share` / `unshare` — see and change who can read a calendar
+
+### Drive
+- `gw drive copy` and `gw drive move`. A Drive file can have several parents, so
+  `move` reads the current ones and swaps them instead of adding a second, which
+  would leave the file visible in two folders
+- `gw drive about` — storage quota
+- `gw drive revisions` / `revision-delete` — version history
+- `gw drive comments` / `comment` / `comment-reply` / `comment-resolve`
+- `gw drive permissions` — who has access. gw could share and unshare but never show
+- `gw drive drives` — shared drives
+
+### Sheets
+- `gw sheets append` — add rows. VALUES is a JSON list for one row, a list of lists
+  for several, or plain text for a single cell
+- `gw sheets clear`, `create`, `info`, `add-tab`, `delete-tab`
+
+### Fixes
+- `gw doctor` now makes one real call per Google API. This immediately found that
+  the **Sheets and Tasks APIs were never enabled in the Cloud project**, so
+  `gw sheets read/write` and every `gw tasks` command have always failed silently.
+  A disabled API is now reported by name with the console URL that fixes it
+- `gw gmail drafts` originally passed `metadataHeaders` to `drafts.get`, which that
+  endpoint rejects even though `messages.get` accepts it. Caught only by calling
+  the real API — the mock accepted it happily
+
+### Notes
+- No existing flag changed meaning
+- Attachments are still not exposed through the MCP server
+- Docs write and Contacts write remain impossible without a re-auth: the token
+  requests `documents.readonly` and `contacts.readonly`
+
+### Roadmap
+- Gmail attachments through the MCP server
+- `gw tasks update` / `uncomplete`, `gw contacts create` / `delete`, Docs write —
+  the last two need a widened OAuth scope, so they force a re-auth
+- Gmail settings (filters, vacation, send-as) need `gmail.settings.basic`
+- Permanent Gmail delete needs the restricted `https://mail.google.com/` scope
+
 ## v0.6.0 (2026-09-09)
 
 ### Features
