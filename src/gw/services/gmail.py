@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 import base64
+import mimetypes
+from collections.abc import Sequence
+from email import encoders
+from email.message import Message
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any
@@ -31,8 +37,86 @@ def _message_headers(message: dict[str, Any]) -> dict[str, str]:
     return header_map(payload.get("headers"))
 
 
-def _encode_message(message: MIMEText) -> str:
+def _encode_message(message: Message) -> str:
     return base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+
+
+def _resolve_body(body: str | None, body_file: str | None) -> str:
+    """Pick the message body from the positional argument or from a file, never both."""
+    if body_file is not None and body is not None:
+        raise click.ClickException("Pass either the BODY argument or --body-file, not both.")
+    if body_file is not None:
+        path = Path(body_file).expanduser()
+        if not path.is_file():
+            raise click.ClickException(f"Body file not found: {path}")
+        return path.read_text(encoding="utf-8")
+    if body is None:
+        raise click.ClickException("Provide a BODY argument or --body-file PATH.")
+    return body
+
+
+def _attachment_path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_file():
+        raise click.ClickException(f"Attachment not found: {path}")
+    return path
+
+
+def _attachment_part(path: Path) -> MIMEBase:
+    """Wrap a file as a base64 MIME part, keeping the bytes untouched."""
+    guessed, _ = mimetypes.guess_type(path.name)
+    maintype, _, subtype = (guessed or "application/octet-stream").partition("/")
+    part = MIMEBase(maintype, subtype or "octet-stream")
+    part.set_payload(path.read_bytes())
+    encoders.encode_base64(part)
+
+    filename = safe_attachment_filename(path.name, "attachment")
+    try:
+        filename.encode("ascii")
+    except UnicodeEncodeError:
+        # RFC 2231 continuation, so non-ASCII names survive the header encoding.
+        part.add_header("Content-Disposition", "attachment", filename=("utf-8", "", filename))
+    else:
+        part.add_header("Content-Disposition", "attachment", filename=filename)
+    return part
+
+
+def _build_mime_message(
+    to: str,
+    subject: str,
+    body: str,
+    cc: str | None = None,
+    bcc: str | None = None,
+    attachments: Sequence[str | Path] | None = None,
+    *,
+    reply_headers: dict[str, str] | None = None,
+) -> tuple[Message, list[str]]:
+    """Build the outgoing message, returning it with the attached filenames.
+
+    Without attachments this stays a single ``text/plain`` part, byte for byte what
+    gw sent before 0.6.0. With attachments it becomes ``multipart/mixed``.
+    """
+    paths = [_attachment_path(item) for item in attachments or []]
+
+    message: Message
+    if paths:
+        message = MIMEMultipart("mixed")
+        message.attach(MIMEText(body, "plain", "utf-8"))
+        for path in paths:
+            message.attach(_attachment_part(path))
+    else:
+        message = MIMEText(body)
+
+    message["To"] = to
+    message["Subject"] = subject
+    if cc:
+        message["Cc"] = cc
+    if bcc:
+        message["Bcc"] = bcc
+    for header, value in (reply_headers or {}).items():
+        message[header] = value
+
+    return message, [path.name for path in paths]
 
 
 def _render_list(messages: list[dict[str, Any]]) -> None:
@@ -81,6 +165,12 @@ def _render_attachments(data: dict[str, Any]) -> None:
         print_human(f"    ID: {attachment['attachment_id'] or '(inline body data)'}")
 
 
+def _render_sent_attachments(data: dict[str, Any]) -> None:
+    filenames = data.get("attachments") or []
+    if filenames:
+        print_human(f"Attached {len(filenames)} file(s): {', '.join(filenames)}")
+
+
 def _modify_gmail_labels(
     message_id: str,
     *,
@@ -103,42 +193,53 @@ def _modify_gmail_labels(
 def send_gmail_message(
     to: str,
     subject: str,
-    body: str,
+    body: str | None = None,
     cc: str | None = None,
     bcc: str | None = None,
+    attachments: Sequence[str | Path] | None = None,
+    body_file: str | None = None,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     service = _gmail_service(config)
-    message = MIMEText(body)
-    message["To"] = to
-    message["Subject"] = subject
-    if cc:
-        message["Cc"] = cc
-    if bcc:
-        message["Bcc"] = bcc
+    message, filenames = _build_mime_message(
+        to=to,
+        subject=subject,
+        body=_resolve_body(body, body_file),
+        cc=cc,
+        bcc=bcc,
+        attachments=attachments,
+    )
 
     sent = execute_google_request(
         service.users().messages().send(userId="me", body={"raw": _encode_message(message)})
     )
-    return {"id": sent.get("id"), "to": to, "subject": subject}
+    return {
+        "id": sent.get("id"),
+        "to": to,
+        "subject": subject,
+        "attachments": filenames,
+    }
 
 
 def create_gmail_draft(
     to: str,
     subject: str,
-    body: str,
+    body: str | None = None,
     cc: str | None = None,
     bcc: str | None = None,
+    attachments: Sequence[str | Path] | None = None,
+    body_file: str | None = None,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     service = _gmail_service(config)
-    message = MIMEText(body)
-    message["To"] = to
-    message["Subject"] = subject
-    if cc:
-        message["Cc"] = cc
-    if bcc:
-        message["Bcc"] = bcc
+    message, filenames = _build_mime_message(
+        to=to,
+        subject=subject,
+        body=_resolve_body(body, body_file),
+        cc=cc,
+        bcc=bcc,
+        attachments=attachments,
+    )
 
     draft = execute_google_request(
         service.users()
@@ -150,14 +251,20 @@ def create_gmail_draft(
         "message_id": draft.get("message", {}).get("id"),
         "to": to,
         "subject": subject,
+        "attachments": filenames,
     }
 
 
 def reply_to_gmail_message(
     message_id: str,
-    body: str,
+    body: str | None = None,
+    cc: str | None = None,
+    bcc: str | None = None,
+    attachments: Sequence[str | Path] | None = None,
+    body_file: str | None = None,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
+    resolved_body = _resolve_body(body, body_file)
     service = _gmail_service(config)
     original = execute_google_request(
         service.users()
@@ -173,12 +280,20 @@ def reply_to_gmail_message(
     subject = headers.get("subject", "")
     reply_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"
 
-    message = MIMEText(body)
-    message["To"] = headers.get("from", "")
-    message["Subject"] = reply_subject
+    reply_headers: dict[str, str] = {}
     if headers.get("message-id"):
-        message["In-Reply-To"] = headers["message-id"]
-        message["References"] = headers.get("references", headers["message-id"])
+        reply_headers["In-Reply-To"] = headers["message-id"]
+        reply_headers["References"] = headers.get("references", headers["message-id"])
+
+    message, filenames = _build_mime_message(
+        to=headers.get("from", ""),
+        subject=reply_subject,
+        body=resolved_body,
+        cc=cc,
+        bcc=bcc,
+        attachments=attachments,
+        reply_headers=reply_headers,
+    )
 
     sent = execute_google_request(
         service.users()
@@ -188,12 +303,19 @@ def reply_to_gmail_message(
             body={"raw": _encode_message(message), "threadId": original.get("threadId")},
         )
     )
-    return {"id": sent.get("id"), "thread_id": original.get("threadId")}
+    return {
+        "id": sent.get("id"),
+        "thread_id": original.get("threadId"),
+        "attachments": filenames,
+    }
 
 
 def forward_gmail_message(
     message_id: str,
     to: str,
+    cc: str | None = None,
+    bcc: str | None = None,
+    attachments: Sequence[str | Path] | None = None,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     service = _gmail_service(config)
@@ -210,13 +332,18 @@ def forward_gmail_message(
         f"To: {headers.get('to', '')}\n\n"
         f"{body}"
     )
-    message = MIMEText(forwarded_body)
-    message["To"] = to
-    message["Subject"] = f"Fwd: {headers.get('subject', '')}"
+    message, filenames = _build_mime_message(
+        to=to,
+        subject=f"Fwd: {headers.get('subject', '')}",
+        body=forwarded_body,
+        cc=cc,
+        bcc=bcc,
+        attachments=attachments,
+    )
     sent = execute_google_request(
         service.users().messages().send(userId="me", body={"raw": _encode_message(message)})
     )
-    return {"id": sent.get("id"), "to": to}
+    return {"id": sent.get("id"), "to": to, "attachments": filenames}
 
 
 def list_gmail_messages(
@@ -605,78 +732,193 @@ def register_gmail_commands(group: click.Group) -> None:
     @group.command("send")
     @click.argument("to")
     @click.argument("subject")
-    @click.argument("body")
+    @click.argument("body", required=False)
     @click.option("--cc", default=None)
     @click.option("--bcc", default=None)
+    @click.option(
+        "--attachment",
+        "attachments",
+        multiple=True,
+        type=click.Path(exists=True, dir_okay=False),
+        help="File to attach. Repeat for several.",
+    )
+    @click.option(
+        "--body-file",
+        "body_file",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Read the body from this file instead of the BODY argument.",
+    )
     @json_option
     @click.pass_context
     def send_command(
         ctx: click.Context,
         to: str,
         subject: str,
-        body: str,
+        body: str | None,
         cc: str | None,
         bcc: str | None,
+        attachments: tuple[str, ...],
+        body_file: str | None,
         json_output: bool | None,
     ) -> None:
+        """Send an email. Attach files with --attachment (repeatable)."""
         config = ctx.obj["config"]
-        data = send_gmail_message(to=to, subject=subject, body=body, cc=cc, bcc=bcc, config=config)
+        data = send_gmail_message(
+            to=to,
+            subject=subject,
+            body=body,
+            cc=cc,
+            bcc=bcc,
+            attachments=attachments,
+            body_file=body_file,
+            config=config,
+        )
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
             print_success(f"Email sent! Message ID: {data.get('id')}")
+            _render_sent_attachments(data)
 
     @group.command("draft")
     @click.argument("to")
     @click.argument("subject")
-    @click.argument("body")
+    @click.argument("body", required=False)
     @click.option("--cc", default=None)
     @click.option("--bcc", default=None)
+    @click.option(
+        "--attachment",
+        "attachments",
+        multiple=True,
+        type=click.Path(exists=True, dir_okay=False),
+        help="File to attach. Repeat for several.",
+    )
+    @click.option(
+        "--body-file",
+        "body_file",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Read the body from this file instead of the BODY argument.",
+    )
     @json_option
     @click.pass_context
     def draft_command(
         ctx: click.Context,
         to: str,
         subject: str,
-        body: str,
+        body: str | None,
         cc: str | None,
         bcc: str | None,
+        attachments: tuple[str, ...],
+        body_file: str | None,
         json_output: bool | None,
     ) -> None:
+        """Create a draft. Attach files with --attachment (repeatable)."""
         config = ctx.obj["config"]
-        data = create_gmail_draft(to=to, subject=subject, body=body, cc=cc, bcc=bcc, config=config)
+        data = create_gmail_draft(
+            to=to,
+            subject=subject,
+            body=body,
+            cc=cc,
+            bcc=bcc,
+            attachments=attachments,
+            body_file=body_file,
+            config=config,
+        )
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
             print_success(f"Draft created! Draft ID: {data.get('id')}")
+            _render_sent_attachments(data)
 
     @group.command("reply")
     @click.argument("message_id")
-    @click.argument("body")
+    @click.argument("body", required=False)
+    @click.option("--cc", default=None)
+    @click.option("--bcc", default=None)
+    @click.option(
+        "--attachment",
+        "attachments",
+        multiple=True,
+        type=click.Path(exists=True, dir_okay=False),
+        help="File to attach. Repeat for several.",
+    )
+    @click.option(
+        "--body-file",
+        "body_file",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Read the body from this file instead of the BODY argument.",
+    )
     @json_option
     @click.pass_context
     def reply_command(
-        ctx: click.Context, message_id: str, body: str, json_output: bool | None
+        ctx: click.Context,
+        message_id: str,
+        body: str | None,
+        cc: str | None,
+        bcc: str | None,
+        attachments: tuple[str, ...],
+        body_file: str | None,
+        json_output: bool | None,
     ) -> None:
-        data = reply_to_gmail_message(message_id=message_id, body=body, config=ctx.obj["config"])
+        """Reply in thread. Attach files with --attachment (repeatable)."""
+        data = reply_to_gmail_message(
+            message_id=message_id,
+            body=body,
+            cc=cc,
+            bcc=bcc,
+            attachments=attachments,
+            body_file=body_file,
+            config=ctx.obj["config"],
+        )
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
             print_success(f"Reply sent! Message ID: {data.get('id')}")
+            _render_sent_attachments(data)
 
     @group.command("forward")
     @click.argument("message_id")
     @click.argument("to")
+    @click.option("--cc", default=None)
+    @click.option("--bcc", default=None)
+    @click.option(
+        "--attachment",
+        "attachments",
+        multiple=True,
+        type=click.Path(exists=True, dir_okay=False),
+        help="File to attach. Repeat for several.",
+    )
     @json_option
     @click.pass_context
     def forward_command(
-        ctx: click.Context, message_id: str, to: str, json_output: bool | None
+        ctx: click.Context,
+        message_id: str,
+        to: str,
+        cc: str | None,
+        bcc: str | None,
+        attachments: tuple[str, ...],
+        json_output: bool | None,
     ) -> None:
-        data = forward_gmail_message(message_id=message_id, to=to, config=ctx.obj["config"])
+        """Forward a message. Add extra files with --attachment (repeatable).
+
+        The original attachments are not re-sent; attach them explicitly after
+        `gw gmail download` if the recipient needs them.
+        """
+        data = forward_gmail_message(
+            message_id=message_id,
+            to=to,
+            cc=cc,
+            bcc=bcc,
+            attachments=attachments,
+            config=ctx.obj["config"],
+        )
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
             print_success(f"Forwarded! Message ID: {data.get('id')}")
+            _render_sent_attachments(data)
 
     @group.command("list")
     @click.option("--max", "max_results", default=10, type=int, show_default=True)

@@ -74,6 +74,10 @@ def set_mcp_config(config: GWConfig) -> None:
 def gmail_send(
     to: str, subject: str, body: str, cc: str | None = None, bcc: str | None = None
 ) -> dict:
+    """Send a plain-text email.
+
+    Attachments are not exposed over MCP; use `gw gmail send --attachment PATH`.
+    """
     return send_gmail_message(to=to, subject=subject, body=body, cc=cc, bcc=bcc, config=_config())
 
 
@@ -81,6 +85,10 @@ def gmail_send(
 def gmail_draft(
     to: str, subject: str, body: str, cc: str | None = None, bcc: str | None = None
 ) -> dict:
+    """Create a plain-text draft.
+
+    Attachments are not exposed over MCP; use `gw gmail draft --attachment PATH`.
+    """
     return create_gmail_draft(
         to=to, subject=subject, body=body, cc=cc, bcc=bcc, config=_config()
     )
@@ -88,11 +96,19 @@ def gmail_draft(
 
 @mcp_server.tool()
 def gmail_reply(message_id: str, body: str) -> dict:
+    """Reply in thread.
+
+    Cc/Bcc and attachments are not exposed over MCP; use `gw gmail reply --attachment PATH`.
+    """
     return reply_to_gmail_message(message_id=message_id, body=body, config=_config())
 
 
 @mcp_server.tool()
 def gmail_forward(message_id: str, to: str) -> dict:
+    """Forward a message.
+
+    Cc/Bcc and attachments are not exposed over MCP; use `gw gmail forward --attachment PATH`.
+    """
     return forward_gmail_message(message_id=message_id, to=to, config=_config())
 
 

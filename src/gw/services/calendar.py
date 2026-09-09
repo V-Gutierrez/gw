@@ -191,6 +191,9 @@ def create_calendar_event(
     recurrence: tuple[str, ...] = (),
     calendar_id: str | None = None,
     reminder: int | None = None,
+    attendees: tuple[str, ...] = (),
+    location: str | None = None,
+    send_updates: str = "none",
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     service = _calendar_service(config)
@@ -220,9 +223,17 @@ def create_calendar_event(
             "useDefault": False,
             "overrides": [{"method": "popup", "minutes": reminder}],
         }
+    if attendees:
+        event["attendees"] = [{"email": email} for email in attendees]
+    if location:
+        event["location"] = location
 
     created = execute_google_request(
-        service.events().insert(calendarId=target_calendar, body=event)
+        service.events().insert(
+            calendarId=target_calendar,
+            body=event,
+            sendUpdates=send_updates,
+        )
     )
     return {
         "id": created.get("id"),
@@ -265,6 +276,10 @@ def update_calendar_event(
     start: str | None = None,
     end: str | None = None,
     description: str | None = None,
+    location: str | None = None,
+    attendees: tuple[str, ...] = (),
+    reminder: int | None = None,
+    send_updates: str = "none",
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     if (start is None) != (end is None):
@@ -275,6 +290,16 @@ def update_calendar_event(
         patch["summary"] = title
     if description is not None:
         patch["description"] = description
+    if location is not None:
+        patch["location"] = location
+    if attendees:
+        # Google replaces the whole list on patch, so this overwrites the guests.
+        patch["attendees"] = [{"email": email} for email in attendees]
+    if reminder is not None:
+        patch["reminders"] = {
+            "useDefault": False,
+            "overrides": [{"method": "popup", "minutes": reminder}],
+        }
     if start is not None and end is not None:
         start_dt = parse_date(start, timezone)
         end_dt = parse_date(end, timezone)
@@ -287,7 +312,12 @@ def update_calendar_event(
     service = _calendar_service(config)
     target_calendar = calendar_id or default_calendar
     updated = execute_google_request(
-        service.events().patch(calendarId=target_calendar, eventId=event_id, body=patch)
+        service.events().patch(
+            calendarId=target_calendar,
+            eventId=event_id,
+            body=patch,
+            sendUpdates=send_updates,
+        )
     )
     return {
         "id": updated.get("id", event_id),
@@ -460,6 +490,16 @@ def register_calendar_commands(group: click.Group) -> None:
     @click.option("--recurrence", multiple=True, help="Add one RRULE recurrence value.")
     @click.option("--calendar", "calendar_id", default=None, help="Calendar ID to use.")
     @click.option("--reminder", default=None, type=int, help="Popup reminder in minutes.")
+    @click.option("--attendees", multiple=True, help="Guest email. Repeat for several.")
+    @click.option("--location", default=None, help="Event location.")
+    @click.option(
+        "--send-updates",
+        "send_updates",
+        type=click.Choice(["none", "all", "externalOnly"]),
+        default="none",
+        show_default=True,
+        help="Whether Google emails the guests.",
+    )
     @json_option
     @click.pass_context
     def create_command(
@@ -472,8 +512,12 @@ def register_calendar_commands(group: click.Group) -> None:
         recurrence: tuple[str, ...],
         calendar_id: str | None,
         reminder: int | None,
+        attendees: tuple[str, ...],
+        location: str | None,
+        send_updates: str,
         json_output: bool | None,
     ) -> None:
+        """Create an event. Invite guests with --attendees (repeatable)."""
         config = ctx.obj["config"]
         data = create_calendar_event(
             title=title,
@@ -486,6 +530,9 @@ def register_calendar_commands(group: click.Group) -> None:
             recurrence=recurrence,
             calendar_id=calendar_id,
             reminder=reminder,
+            attendees=attendees,
+            location=location,
+            send_updates=send_updates,
             config=config,
         )
         if use_json_output(ctx, json_output):
@@ -534,6 +581,21 @@ def register_calendar_commands(group: click.Group) -> None:
     @click.option("--end", default=None, help="Updated event end datetime.")
     @click.option("--description", default=None, help="Updated event description.")
     @click.option("--calendar", "calendar_id", default=None, help="Calendar containing the event.")
+    @click.option("--location", default=None, help="Updated event location.")
+    @click.option(
+        "--attendees",
+        multiple=True,
+        help="Guest email. Repeat for several. Replaces the whole guest list.",
+    )
+    @click.option("--reminder", default=None, type=int, help="Popup reminder in minutes.")
+    @click.option(
+        "--send-updates",
+        "send_updates",
+        type=click.Choice(["none", "all", "externalOnly"]),
+        default="none",
+        show_default=True,
+        help="Whether Google emails the guests.",
+    )
     @json_option
     @click.pass_context
     def update_command(
@@ -544,8 +606,13 @@ def register_calendar_commands(group: click.Group) -> None:
         end: str | None,
         description: str | None,
         calendar_id: str | None,
+        location: str | None,
+        attendees: tuple[str, ...],
+        reminder: int | None,
+        send_updates: str,
         json_output: bool | None,
     ) -> None:
+        """Update an event. --attendees replaces the whole guest list."""
         config = ctx.obj["config"]
         data = update_calendar_event(
             event_id=event_id,
@@ -556,6 +623,10 @@ def register_calendar_commands(group: click.Group) -> None:
             start=start,
             end=end,
             description=description,
+            location=location,
+            attendees=attendees,
+            reminder=reminder,
+            send_updates=send_updates,
             config=config,
         )
         if use_json_output(ctx, json_output):

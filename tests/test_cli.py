@@ -439,6 +439,7 @@ def test_gmail_draft_json(mock_build_service: MagicMock):
         "message_id": "msg-1",
         "to": "to@example.com",
         "subject": "Subject",
+        "attachments": [],
     }
 
 

@@ -252,6 +252,101 @@ def share_drive_file(
     }
 
 
+def delete_drive_file(
+    file_id: str,
+    permanent: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Trash a file, or delete it for good with ``permanent``.
+
+    Trashing is the default because a permanent delete cannot be undone — not
+    even by the file owner.
+    """
+    service = _drive_service(config)
+    if permanent:
+        execute_google_request(service.files().delete(fileId=file_id, supportsAllDrives=True))
+        return {"id": file_id, "name": None, "trashed": False, "permanent": True}
+
+    updated = execute_google_request(
+        service.files().update(
+            fileId=file_id,
+            body={"trashed": True},
+            fields="id,name,trashed",
+            supportsAllDrives=True,
+        )
+    )
+    return {
+        "id": updated.get("id", file_id),
+        "name": updated.get("name"),
+        "trashed": bool(updated.get("trashed", True)),
+        "permanent": False,
+    }
+
+
+def rename_drive_file(
+    file_id: str,
+    name: str,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _drive_service(config)
+    updated = execute_google_request(
+        service.files().update(
+            fileId=file_id,
+            body={"name": name},
+            fields="id,name,mimeType,webViewLink",
+            supportsAllDrives=True,
+        )
+    )
+    return {
+        "id": updated.get("id", file_id),
+        "name": updated.get("name", name),
+        "mime_type": updated.get("mimeType"),
+        "web_view_link": updated.get("webViewLink"),
+    }
+
+
+def unshare_drive_file(
+    file_id: str,
+    email: str,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Remove one person's permission on a file, looked up by email."""
+    service = _drive_service(config)
+    permissions = execute_google_request(
+        service.permissions().list(
+            fileId=file_id,
+            fields="permissions(id,emailAddress,role,type)",
+            supportsAllDrives=True,
+        )
+    ).get("permissions", [])
+
+    target = next(
+        (
+            permission
+            for permission in permissions
+            if (permission.get("emailAddress") or "").lower() == email.lower()
+        ),
+        None,
+    )
+    if target is None:
+        raise click.ClickException(f"No permission found for {email} on file {file_id}.")
+
+    execute_google_request(
+        service.permissions().delete(
+            fileId=file_id,
+            permissionId=target["id"],
+            supportsAllDrives=True,
+        )
+    )
+    return {
+        "file_id": file_id,
+        "email": target.get("emailAddress", email),
+        "permission_id": target["id"],
+        "role": target.get("role"),
+        "removed": True,
+    }
+
+
 def get_drive_file_info(
     file_id: str,
     config: GWConfig | None = None,
@@ -449,3 +544,75 @@ def register_drive_commands(group: click.Group) -> None:
                 print_human("  Shared: Yes")
             if data.get("description"):
                 print_human(f"  Description: {data['description']}")
+
+    @group.command("delete")
+    @click.argument("file_id")
+    @click.option(
+        "--permanent",
+        is_flag=True,
+        help="Delete for good instead of moving to the trash. Cannot be undone.",
+    )
+    @click.option("--yes", "-y", is_flag=True, help="Skip the confirmation for --permanent.")
+    @json_option
+    @click.pass_context
+    def delete_command(
+        ctx: click.Context,
+        file_id: str,
+        permanent: bool,
+        yes: bool,
+        json_output: bool | None,
+    ) -> None:
+        """Move a file to the trash. Use --permanent to delete it for good."""
+        if permanent and not yes:
+            click.confirm(
+                f"Permanently delete {file_id}? This cannot be undone.",
+                abort=True,
+            )
+        data = delete_drive_file(
+            file_id=file_id,
+            permanent=permanent,
+            config=ctx.obj["config"],
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        elif data["permanent"]:
+            print_success(f"Permanently deleted: {data['id']}")
+        else:
+            print_success(f"Moved to trash: {data.get('name') or data['id']}")
+
+    @group.command("rename")
+    @click.argument("file_id")
+    @click.argument("name")
+    @json_option
+    @click.pass_context
+    def rename_command(
+        ctx: click.Context,
+        file_id: str,
+        name: str,
+        json_output: bool | None,
+    ) -> None:
+        """Rename a file or folder."""
+        data = rename_drive_file(file_id=file_id, name=name, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Renamed to: {data['name']}")
+
+    @group.command("unshare")
+    @click.argument("file_id")
+    @click.argument("email")
+    @json_option
+    @click.pass_context
+    def unshare_command(
+        ctx: click.Context,
+        file_id: str,
+        email: str,
+        json_output: bool | None,
+    ) -> None:
+        """Remove someone's access to a file."""
+        data = unshare_drive_file(file_id=file_id, email=email, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            role = data.get("role") or "access"
+            print_success(f"Removed {role} for {data['email']}")
