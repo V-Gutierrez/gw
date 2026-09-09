@@ -158,13 +158,19 @@ def test_history_lists_changes_since_a_history_id() -> None:
 
 
 def test_doctor_now_actually_calls_the_api() -> None:
-    """A local-only doctor cannot tell you auth works; it must reach Google."""
-    service = _service_with_labels()
-    with patch("gw.services.gmail._gmail_service", return_value=service):
+    """A local-only doctor cannot tell you auth works; it must reach Google.
+
+    Per-API detail lives in tests/test_doctor_apis.py; this only pins that the
+    doctor report reaches the network at all.
+    """
+    with (
+        patch("gw.doctor.credential_status", return_value={"authenticated": True}),
+        patch("gw.doctor._probe_api") as probe,
+    ):
         result = CliRunner().invoke(main, ["--json", "doctor"])
 
-    assert service.users.return_value.getProfile.call_count == 1
-    assert "api_reachable" in result.output
+    assert probe.call_count >= 5
+    assert "api_gmail" in result.output
 
 
 def test_gmail_thread_and_profile_commands_are_wired() -> None:

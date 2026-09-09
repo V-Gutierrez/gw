@@ -32,34 +32,101 @@ def run_doctor(config: GWConfig) -> dict[str, Any]:
             "status": "ok" if bool(config.timezone) else "error",
             "detail": config.timezone,
         },
-        _api_check(config, authenticated=bool(status["authenticated"])),
+        *_api_checks(config, authenticated=bool(status["authenticated"])),
     ]
     return {"ok": all(check["status"] == "ok" for check in checks), "checks": checks}
 
 
-def _api_check(config: GWConfig, *, authenticated: bool) -> dict[str, Any]:
-    """Actually call Google.
+# Every API gw talks to, with a cheap read that proves it answers.
+_APIS: tuple[str, ...] = ("gmail", "calendar", "drive", "sheets", "docs", "tasks", "people")
+
+
+def _probe_api(api: str, config: GWConfig) -> None:
+    """Make the smallest possible real call against one API. Raises on failure."""
+    from gw.auth import build_service, execute_google_request
+
+    if api == "gmail":
+        service = build_service("gmail", "v1", config=config)
+        execute_google_request(service.users().getProfile(userId="me"))
+    elif api == "calendar":
+        service = build_service("calendar", "v3", config=config)
+        execute_google_request(service.calendarList().list(maxResults=1))
+    elif api == "drive":
+        service = build_service("drive", "v3", config=config)
+        execute_google_request(service.about().get(fields="user"))
+    elif api == "sheets":
+        service = build_service("sheets", "v4", config=config)
+        execute_google_request(service.spreadsheets().get(spreadsheetId="_gw_doctor_probe_"))
+    elif api == "docs":
+        service = build_service("docs", "v1", config=config)
+        execute_google_request(service.documents().get(documentId="_gw_doctor_probe_"))
+    elif api == "tasks":
+        service = build_service("tasks", "v1", config=config)
+        execute_google_request(service.tasklists().list(maxResults=1))
+    elif api == "people":
+        service = build_service("people", "v1", config=config)
+        execute_google_request(
+            service.people()
+            .connections()
+            .list(resourceName="people/me", pageSize=1, personFields="names")
+        )
+
+
+def _classify(api: str, exc: Exception) -> dict[str, Any]:
+    """A 404 on a probe id means the API answered; 'not been used' means it is off."""
+    message = str(exc)
+    if "has not been used in project" in message or "it is disabled" in message:
+        return {
+            "name": f"api_{api}",
+            "status": "error",
+            "detail": (
+                f"NOT ENABLED in the Google Cloud project — enable the {api} API at "
+                f"https://console.cloud.google.com/apis/library/{_API_HOSTS[api]}"
+            ),
+        }
+    if "404" in message or "not found" in message.lower():
+        # The probe id is deliberately bogus; a 404 proves the API is reachable.
+        return {"name": f"api_{api}", "status": "ok", "detail": "Reachable"}
+    return {"name": f"api_{api}", "status": "error", "detail": message[:160]}
+
+
+_API_HOSTS = {
+    "gmail": "gmail.googleapis.com",
+    "calendar": "calendar-json.googleapis.com",
+    "drive": "drive.googleapis.com",
+    "sheets": "sheets.googleapis.com",
+    "docs": "docs.googleapis.com",
+    "tasks": "tasks.googleapis.com",
+    "people": "people.googleapis.com",
+}
+
+
+def _api_checks(config: GWConfig, *, authenticated: bool) -> list[dict[str, Any]]:
+    """Actually call Google, once per API.
 
     Every other check here reads local files, so a green report used to prove only
-    that the files existed — not that the token still works against the API.
+    that the files existed — not that the token worked, and not that the APIs were
+    even switched on in the Cloud project.
     """
     if not authenticated:
-        return {
-            "name": "api_reachable",
-            "status": "error",
-            "detail": "Skipped: not authenticated",
-        }
-    try:
-        from gw.services.gmail import get_gmail_profile
+        return [
+            {
+                "name": f"api_{api}",
+                "status": "error",
+                "detail": "Skipped: not authenticated",
+            }
+            for api in _APIS
+        ]
 
-        profile = get_gmail_profile(config=config)
-    except Exception as exc:  # noqa: BLE001 - any failure here is a failed check
-        return {"name": "api_reachable", "status": "error", "detail": str(exc)}
-    return {
-        "name": "api_reachable",
-        "status": "ok",
-        "detail": f"Gmail API OK as {profile['email']} ({profile['messages_total']} messages)",
-    }
+    checks: list[dict[str, Any]] = []
+    for api in _APIS:
+        try:
+            _probe_api(api, config)
+        except Exception as exc:  # noqa: BLE001 - any failure here is a failed check
+            checks.append(_classify(api, exc))
+        else:
+            checks.append({"name": f"api_{api}", "status": "ok", "detail": "Reachable"})
+    return checks
 
 
 def print_doctor_report(report: dict[str, Any]) -> None:

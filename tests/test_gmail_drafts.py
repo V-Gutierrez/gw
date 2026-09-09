@@ -104,6 +104,9 @@ def test_list_drafts_returns_id_and_headers() -> None:
             "snippet": "ola",
         }
     ]
+    # drafts.get rejects metadataHeaders, which messages.get accepts. A MagicMock
+    # swallows any kwarg, so only this assertion catches the difference.
+    assert "metadataHeaders" not in drafts.get.call_args.kwargs
 
 
 def test_get_draft_exposes_body_and_attachments() -> None:

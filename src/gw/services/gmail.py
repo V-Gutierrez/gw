@@ -310,12 +310,9 @@ def list_gmail_drafts(
         detail = execute_google_request(
             service.users()
             .drafts()
-            .get(
-                userId="me",
-                id=stub["id"],
-                format="metadata",
-                metadataHeaders=["To", "Subject"],
-            )
+            # drafts.get takes no metadataHeaders — unlike messages.get, passing it
+            # is rejected by the API with "unexpected keyword argument".
+            .get(userId="me", id=stub["id"], format="metadata")
         )
         message = detail.get("message", {})
         headers = _message_headers(message)
