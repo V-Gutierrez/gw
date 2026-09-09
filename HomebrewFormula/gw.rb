@@ -3,8 +3,8 @@ class Gw < Formula
 
   desc "Google Workspace CLI - Gmail, Calendar, Drive, Sheets, Docs from your terminal"
   homepage "https://github.com/v-gutierrez/gw"
-  url "https://github.com/v-gutierrez/gw/archive/refs/tags/v0.5.2.tar.gz"
-  sha256 "4495adb73f05a20a582d78af518ad98d183f9b5d224a05ae325301e391a9c6d1"
+  url "https://github.com/v-gutierrez/gw/archive/refs/tags/v0.6.0.tar.gz"
+  sha256 "0bbd3e229dfef74dadbc4b0a86302b3eb0ad329b6e200603cbb5124675d9cb0d"
   license "MIT"
 
   depends_on "openssl@3"
