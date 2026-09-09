@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import mimetypes
 from collections.abc import Sequence
-from email import encoders
+from email import encoders, message_from_bytes
 from email.message import Message
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -90,20 +90,27 @@ def _build_mime_message(
     attachments: Sequence[str | Path] | None = None,
     *,
     reply_headers: dict[str, str] | None = None,
+    extra_parts: Sequence[Message] | None = None,
 ) -> tuple[Message, list[str]]:
     """Build the outgoing message, returning it with the attached filenames.
 
     Without attachments this stays a single ``text/plain`` part, byte for byte what
     gw sent before 0.6.0. With attachments it becomes ``multipart/mixed``.
+
+    ``extra_parts`` carries MIME parts that already exist — the attachments kept
+    from a draft being edited, which never touch the filesystem.
     """
     paths = [_attachment_path(item) for item in attachments or []]
+    kept = list(extra_parts or [])
 
     message: Message
-    if paths:
+    if paths or kept:
         message = MIMEMultipart("mixed")
         message.attach(MIMEText(body, "plain", "utf-8"))
         for path in paths:
             message.attach(_attachment_part(path))
+        for part in kept:
+            message.attach(part)
     else:
         message = MIMEText(body)
 
@@ -116,7 +123,9 @@ def _build_mime_message(
     for header, value in (reply_headers or {}).items():
         message[header] = value
 
-    return message, [path.name for path in paths]
+    return message, [path.name for path in paths] + [
+        part.get_filename() or "attachment" for part in kept
+    ]
 
 
 def _render_list(messages: list[dict[str, Any]]) -> None:
@@ -253,6 +262,168 @@ def create_gmail_draft(
         "subject": subject,
         "attachments": filenames,
     }
+
+
+def _draft_parts(parsed: Message) -> tuple[str, list[Message]]:
+    """Split a parsed draft into its text body and its attachment parts."""
+    if not parsed.is_multipart():
+        payload = parsed.get_payload(decode=True)
+        if payload is None:
+            return str(parsed.get_payload()), []
+        charset = parsed.get_content_charset() or "utf-8"
+        return payload.decode(charset, errors="replace"), []
+
+    body = ""
+    attachments: list[Message] = []
+    for part in parsed.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+        if part.get_filename() or part.get_content_disposition() == "attachment":
+            attachments.append(part)
+        elif not body and part.get_content_type() == "text/plain":
+            payload = part.get_payload(decode=True)
+            charset = part.get_content_charset() or "utf-8"
+            body = payload.decode(charset, errors="replace") if payload else ""
+    return body, attachments
+
+
+def _fetch_draft(service: Any, draft_id: str) -> Message:
+    draft = execute_google_request(
+        service.users().drafts().get(userId="me", id=draft_id, format="raw")
+    )
+    raw = draft.get("message", {}).get("raw")
+    if not raw:
+        raise click.ClickException(f"Draft {draft_id!r} has no readable content.")
+    return message_from_bytes(decode_base64url_bytes(raw))
+
+
+def list_gmail_drafts(
+    max_results: int = 10,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    service = _gmail_service(config)
+    response = execute_google_request(
+        service.users().drafts().list(userId="me", maxResults=max_results)
+    )
+    drafts: list[dict[str, Any]] = []
+    for stub in response.get("drafts", []):
+        detail = execute_google_request(
+            service.users()
+            .drafts()
+            .get(
+                userId="me",
+                id=stub["id"],
+                format="metadata",
+                metadataHeaders=["To", "Subject"],
+            )
+        )
+        message = detail.get("message", {})
+        headers = _message_headers(message)
+        drafts.append(
+            {
+                "id": detail.get("id", stub["id"]),
+                "message_id": message.get("id"),
+                "thread_id": message.get("threadId"),
+                "to": headers.get("to", ""),
+                "subject": headers.get("subject", ""),
+                "snippet": message.get("snippet", ""),
+            }
+        )
+    return drafts
+
+
+def get_gmail_draft(draft_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    parsed = _fetch_draft(_gmail_service(config), draft_id)
+    body, parts = _draft_parts(parsed)
+    return {
+        "id": draft_id,
+        "to": parsed.get("To", ""),
+        "cc": parsed.get("Cc", ""),
+        "bcc": parsed.get("Bcc", ""),
+        "subject": parsed.get("Subject", ""),
+        "body": body,
+        "attachments": [
+            {
+                "filename": part.get_filename() or "attachment",
+                "mime_type": part.get_content_type(),
+                "size": len(part.get_payload(decode=True) or b""),
+            }
+            for part in parts
+        ],
+    }
+
+
+def update_gmail_draft(
+    draft_id: str,
+    to: str | None = None,
+    subject: str | None = None,
+    body: str | None = None,
+    cc: str | None = None,
+    bcc: str | None = None,
+    attachments: Sequence[str | Path] | None = None,
+    body_file: str | None = None,
+    clear_attachments: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Edit a draft in place.
+
+    ``drafts.update`` is a full PUT: Gmail replaces the whole message. So gw reads
+    the draft back, applies only the fields you passed, and re-sends the rest
+    untouched — the same "only what you pass changes" rule as ``gw calendar update``.
+
+    Attachments follow the ``--attendees`` convention: passing ``attachments`` makes
+    them the complete new set, passing nothing keeps what is there, and
+    ``clear_attachments`` removes them all.
+    """
+    service = _gmail_service(config)
+    parsed = _fetch_draft(service, draft_id)
+    current_body, current_parts = _draft_parts(parsed)
+
+    new_body = current_body
+    if body is not None or body_file is not None:
+        new_body = _resolve_body(body, body_file)
+
+    kept: list[Message] = []
+    if not clear_attachments and not attachments:
+        kept = current_parts
+
+    message, filenames = _build_mime_message(
+        to=to if to is not None else parsed.get("To", ""),
+        subject=subject if subject is not None else parsed.get("Subject", ""),
+        body=new_body,
+        cc=cc if cc is not None else parsed.get("Cc"),
+        bcc=bcc if bcc is not None else parsed.get("Bcc"),
+        attachments=attachments,
+        extra_parts=kept,
+    )
+
+    updated = execute_google_request(
+        service.users()
+        .drafts()
+        .update(userId="me", id=draft_id, body={"message": {"raw": _encode_message(message)}})
+    )
+    return {
+        # The draft id survives an update; the message id does not, so never key on it.
+        "id": updated.get("id", draft_id),
+        "message_id": updated.get("message", {}).get("id"),
+        "to": message.get("To", ""),
+        "subject": message.get("Subject", ""),
+        "attachments": filenames,
+    }
+
+
+def send_gmail_draft(draft_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = _gmail_service(config)
+    sent = execute_google_request(
+        service.users().drafts().send(userId="me", body={"id": draft_id})
+    )
+    return {"id": sent.get("id"), "thread_id": sent.get("threadId"), "draft_id": draft_id}
+
+
+def delete_gmail_draft(draft_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = _gmail_service(config)
+    execute_google_request(service.users().drafts().delete(userId="me", id=draft_id))
+    return {"id": draft_id, "deleted": True}
 
 
 def reply_to_gmail_message(
@@ -571,6 +742,138 @@ def search_gmail_messages(
     )
 
 
+def _resolve_label_ids(service: Any, names: Sequence[str] | None) -> list[str]:
+    """Turn label names into ids, letting Gmail's built-in ids through untouched."""
+    resolved: list[str] = []
+    for name in names or []:
+        if name.isupper() and " " not in name:
+            resolved.append(name)  # INBOX, UNREAD, STARRED, TRASH…
+        else:
+            resolved.append(_resolve_label_id(service, name))
+    return resolved
+
+
+def modify_gmail_thread(
+    thread_id: str,
+    add_labels: Sequence[str] | None = None,
+    remove_labels: Sequence[str] | None = None,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _gmail_service(config)
+    thread = execute_google_request(
+        service.users()
+        .threads()
+        .modify(
+            userId="me",
+            id=thread_id,
+            body={
+                "addLabelIds": _resolve_label_ids(service, add_labels),
+                "removeLabelIds": _resolve_label_ids(service, remove_labels),
+            },
+        )
+    )
+    return {
+        "thread_id": thread.get("id", thread_id),
+        "message_count": len(thread.get("messages", [])),
+    }
+
+
+def trash_gmail_thread(thread_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = _gmail_service(config)
+    thread = execute_google_request(service.users().threads().trash(userId="me", id=thread_id))
+    return {"thread_id": thread.get("id", thread_id), "trashed": True}
+
+
+def untrash_gmail_thread(thread_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = _gmail_service(config)
+    thread = execute_google_request(service.users().threads().untrash(userId="me", id=thread_id))
+    return {"thread_id": thread.get("id", thread_id), "trashed": False}
+
+
+def untrash_gmail_message(message_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = _gmail_service(config)
+    message = execute_google_request(
+        service.users().messages().untrash(userId="me", id=message_id)
+    )
+    return {"id": message.get("id", message_id), "trashed": False}
+
+
+def bulk_modify_gmail_messages(
+    query: str,
+    max_results: int = 100,
+    archive: bool = False,
+    mark_read: bool = False,
+    mark_unread: bool = False,
+    add_label: str | None = None,
+    remove_label: str | None = None,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Apply one label change to every message matching ``query`` in a single call.
+
+    ``messages.batchModify`` takes up to 1000 ids per request, so this is one HTTP
+    round trip rather than one per message.
+    """
+    service = _gmail_service(config)
+    response = execute_google_request(
+        service.users().messages().list(userId="me", q=query, maxResults=max_results)
+    )
+    ids = [item["id"] for item in response.get("messages", [])]
+    if not ids:
+        return {"count": 0, "ids": [], "query": query}
+
+    add: list[str] = []
+    remove: list[str] = []
+    if archive:
+        remove.append("INBOX")
+    if mark_read:
+        remove.append("UNREAD")
+    if mark_unread:
+        add.append("UNREAD")
+    if add_label:
+        add.extend(_resolve_label_ids(service, [add_label]))
+    if remove_label:
+        remove.extend(_resolve_label_ids(service, [remove_label]))
+
+    execute_google_request(
+        service.users()
+        .messages()
+        .batchModify(
+            userId="me",
+            body={"ids": ids, "addLabelIds": add, "removeLabelIds": remove},
+        )
+    )
+    return {"count": len(ids), "ids": ids, "query": query}
+
+
+def get_gmail_profile(config: GWConfig | None = None) -> dict[str, Any]:
+    service = _gmail_service(config)
+    profile = execute_google_request(service.users().getProfile(userId="me"))
+    return {
+        "email": profile.get("emailAddress"),
+        "messages_total": profile.get("messagesTotal"),
+        "threads_total": profile.get("threadsTotal"),
+        "history_id": profile.get("historyId"),
+    }
+
+
+def get_gmail_history(
+    start_history_id: str,
+    max_results: int = 100,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _gmail_service(config)
+    response = execute_google_request(
+        service.users()
+        .history()
+        .list(userId="me", startHistoryId=start_history_id, maxResults=max_results)
+    )
+    return {
+        "history_id": response.get("historyId"),
+        "start_history_id": start_history_id,
+        "changes": response.get("history", []),
+    }
+
+
 def get_gmail_thread(message_id: str, config: GWConfig | None = None) -> dict[str, Any]:
     service = _gmail_service(config)
     seed_message = execute_google_request(
@@ -834,6 +1137,148 @@ def register_gmail_commands(group: click.Group) -> None:
             print_success(f"Draft created! Draft ID: {data.get('id')}")
             _render_sent_attachments(data)
 
+    @group.command("drafts")
+    @click.option("--max", "max_results", default=10, type=int, show_default=True)
+    @json_option
+    @click.pass_context
+    def drafts_command(ctx: click.Context, max_results: int, json_output: bool | None) -> None:
+        """List drafts with their draft IDs."""
+        data = list_gmail_drafts(max_results=max_results, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        elif not data:
+            print_human("No drafts found.", emoji="📝")
+        else:
+            print_human(f"Drafts ({len(data)}):", emoji="📝")
+            for draft in data:
+                print_human(f"  • Draft ID: {draft['id']}")
+                print_human(f"    To: {draft['to']}")
+                print_human(f"    Subject: {draft['subject']}")
+                print_human(f"    Preview: {draft['snippet']}")
+
+    @group.command("draft-read")
+    @click.argument("draft_id")
+    @json_option
+    @click.pass_context
+    def draft_read_command(ctx: click.Context, draft_id: str, json_output: bool | None) -> None:
+        """Show a draft's current content."""
+        data = get_gmail_draft(draft_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_human(f"Draft {data['id']}:", emoji="📝")
+            print_human(f"  To: {data['to']}")
+            if data["cc"]:
+                print_human(f"  Cc: {data['cc']}")
+            print_human(f"  Subject: {data['subject']}")
+            for attachment in data["attachments"]:
+                print_human(
+                    f"  📎 {attachment['filename']} "
+                    f"({attachment['mime_type']}, {attachment['size']} bytes)"
+                )
+            print_human("")
+            print_human(data["body"])
+
+    @group.command("draft-edit")
+    @click.argument("draft_id")
+    @click.option("--to", default=None, help="Replace the recipient.")
+    @click.option("--subject", default=None, help="Replace the subject.")
+    @click.option("--body", default=None, help="Replace the body.")
+    @click.option("--cc", default=None, help="Replace the Cc list.")
+    @click.option("--bcc", default=None, help="Replace the Bcc list.")
+    @click.option(
+        "--attachment",
+        "attachments",
+        multiple=True,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Replace the attachments with these files. Repeat for several.",
+    )
+    @click.option(
+        "--body-file",
+        "body_file",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Read the replacement body from this file.",
+    )
+    @click.option(
+        "--clear-attachments",
+        is_flag=True,
+        help="Remove every attachment from the draft.",
+    )
+    @json_option
+    @click.pass_context
+    def draft_edit_command(
+        ctx: click.Context,
+        draft_id: str,
+        to: str | None,
+        subject: str | None,
+        body: str | None,
+        cc: str | None,
+        bcc: str | None,
+        attachments: tuple[str, ...],
+        body_file: str | None,
+        clear_attachments: bool,
+        json_output: bool | None,
+    ) -> None:
+        """Edit a draft in place. Only the fields you pass change.
+
+        --attachment replaces the whole attachment set; omit it to keep the files
+        already on the draft, or use --clear-attachments to drop them.
+        """
+        if not any(
+            value is not None for value in (to, subject, body, cc, bcc, body_file)
+        ) and not (attachments or clear_attachments):
+            raise click.ClickException(
+                "Nothing to change. Pass at least one of --to/--subject/--body/"
+                "--body-file/--cc/--bcc/--attachment/--clear-attachments."
+            )
+        data = update_gmail_draft(
+            draft_id,
+            to=to,
+            subject=subject,
+            body=body,
+            cc=cc,
+            bcc=bcc,
+            attachments=attachments,
+            body_file=body_file,
+            clear_attachments=clear_attachments,
+            config=ctx.obj["config"],
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Draft updated! Draft ID: {data['id']}")
+            _render_sent_attachments(data)
+
+    @group.command("draft-send")
+    @click.argument("draft_id")
+    @json_option
+    @click.pass_context
+    def draft_send_command(ctx: click.Context, draft_id: str, json_output: bool | None) -> None:
+        """Send an existing draft."""
+        data = send_gmail_draft(draft_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Draft sent! Message ID: {data['id']}")
+
+    @group.command("draft-delete")
+    @click.argument("draft_id")
+    @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation.")
+    @json_option
+    @click.pass_context
+    def draft_delete_command(
+        ctx: click.Context, draft_id: str, yes: bool, json_output: bool | None
+    ) -> None:
+        """Delete a draft. This cannot be undone."""
+        if not yes:
+            click.confirm(f"Delete draft {draft_id}? This cannot be undone.", abort=True)
+        data = delete_gmail_draft(draft_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Draft {draft_id} deleted.")
+
     @group.command("reply")
     @click.argument("message_id")
     @click.argument("body", required=False)
@@ -970,6 +1415,175 @@ def register_gmail_commands(group: click.Group) -> None:
             print_json(messages)
         else:
             _render_list(messages)
+
+    @group.command("thread-trash")
+    @click.argument("thread_id")
+    @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation.")
+    @json_option
+    @click.pass_context
+    def thread_trash_command(
+        ctx: click.Context, thread_id: str, yes: bool, json_output: bool | None
+    ) -> None:
+        """Move an entire thread to the trash."""
+        if not yes:
+            click.confirm(f"Trash the whole thread {thread_id}?", abort=True)
+        data = trash_gmail_thread(thread_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Thread {thread_id} moved to trash.")
+
+    @group.command("thread-untrash")
+    @click.argument("thread_id")
+    @json_option
+    @click.pass_context
+    def thread_untrash_command(
+        ctx: click.Context, thread_id: str, json_output: bool | None
+    ) -> None:
+        """Restore an entire thread from the trash."""
+        data = untrash_gmail_thread(thread_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Thread {thread_id} restored.")
+
+    @group.command("thread-archive")
+    @click.argument("thread_id")
+    @json_option
+    @click.pass_context
+    def thread_archive_command(
+        ctx: click.Context, thread_id: str, json_output: bool | None
+    ) -> None:
+        """Archive an entire thread (removes it from the inbox)."""
+        data = modify_gmail_thread(thread_id, remove_labels=["INBOX"], config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Thread {thread_id} archived ({data['message_count']} messages).")
+
+    @group.command("thread-label")
+    @click.argument("thread_id")
+    @click.argument("label_name")
+    @click.option("--remove", is_flag=True, help="Remove the label instead of adding it.")
+    @json_option
+    @click.pass_context
+    def thread_label_command(
+        ctx: click.Context,
+        thread_id: str,
+        label_name: str,
+        remove: bool,
+        json_output: bool | None,
+    ) -> None:
+        """Apply or remove a label across an entire thread."""
+        data = modify_gmail_thread(
+            thread_id,
+            add_labels=[] if remove else [label_name],
+            remove_labels=[label_name] if remove else [],
+            config=ctx.obj["config"],
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            verb = "removed from" if remove else "applied to"
+            print_success(f"Label {label_name!r} {verb} thread {thread_id}.")
+
+    @group.command("untrash")
+    @click.argument("message_id")
+    @json_option
+    @click.pass_context
+    def untrash_command(ctx: click.Context, message_id: str, json_output: bool | None) -> None:
+        """Restore a message from the trash."""
+        data = untrash_gmail_message(message_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Message {message_id} restored.")
+
+    @group.command("bulk")
+    @click.option("--query", required=True, help="Gmail query selecting the messages.")
+    @click.option("--max", "max_results", default=100, type=int, show_default=True)
+    @click.option("--archive", is_flag=True, help="Remove from the inbox.")
+    @click.option("--mark-read", is_flag=True, help="Mark as read.")
+    @click.option("--mark-unread", is_flag=True, help="Mark as unread.")
+    @click.option("--label", "add_label", default=None, help="Apply this label.")
+    @click.option("--remove-label", default=None, help="Remove this label.")
+    @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation.")
+    @json_option
+    @click.pass_context
+    def bulk_command(
+        ctx: click.Context,
+        query: str,
+        max_results: int,
+        archive: bool,
+        mark_read: bool,
+        mark_unread: bool,
+        add_label: str | None,
+        remove_label: str | None,
+        yes: bool,
+        json_output: bool | None,
+    ) -> None:
+        """Apply one change to every message matching a query, in a single API call."""
+        if not any([archive, mark_read, mark_unread, add_label, remove_label]):
+            raise click.ClickException(
+                "Nothing to do. Pass at least one of --archive/--mark-read/"
+                "--mark-unread/--label/--remove-label."
+            )
+        if mark_read and mark_unread:
+            raise click.ClickException("--mark-read and --mark-unread contradict each other.")
+        if not yes:
+            click.confirm(
+                f"Apply this to every message matching {query!r} (up to {max_results})?",
+                abort=True,
+            )
+        data = bulk_modify_gmail_messages(
+            query=query,
+            max_results=max_results,
+            archive=archive,
+            mark_read=mark_read,
+            mark_unread=mark_unread,
+            add_label=add_label,
+            remove_label=remove_label,
+            config=ctx.obj["config"],
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Updated {data['count']} message(s).")
+
+    @group.command("profile")
+    @json_option
+    @click.pass_context
+    def profile_command(ctx: click.Context, json_output: bool | None) -> None:
+        """Show the mailbox profile straight from the Gmail API."""
+        data = get_gmail_profile(config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_human(f"Mailbox: {data['email']}", emoji="📬")
+            print_human(f"  Messages: {data['messages_total']}")
+            print_human(f"  Threads: {data['threads_total']}")
+            print_human(f"  History ID: {data['history_id']}")
+
+    @group.command("history")
+    @click.option("--since", "start_history_id", required=True, help="Start history ID.")
+    @click.option("--max", "max_results", default=100, type=int, show_default=True)
+    @json_option
+    @click.pass_context
+    def history_command(
+        ctx: click.Context, start_history_id: str, max_results: int, json_output: bool | None
+    ) -> None:
+        """List mailbox changes since a history ID (from `gw gmail profile`)."""
+        data = get_gmail_history(
+            start_history_id=start_history_id,
+            max_results=max_results,
+            config=ctx.obj["config"],
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            changes = data["changes"]
+            print_human(f"Changes since {start_history_id}: {len(changes)}", emoji="🕓")
+            print_human(f"Current history ID: {data['history_id']}")
 
     @group.command("thread")
     @click.argument("message_id")

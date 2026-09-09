@@ -32,8 +32,34 @@ def run_doctor(config: GWConfig) -> dict[str, Any]:
             "status": "ok" if bool(config.timezone) else "error",
             "detail": config.timezone,
         },
+        _api_check(config, authenticated=bool(status["authenticated"])),
     ]
     return {"ok": all(check["status"] == "ok" for check in checks), "checks": checks}
+
+
+def _api_check(config: GWConfig, *, authenticated: bool) -> dict[str, Any]:
+    """Actually call Google.
+
+    Every other check here reads local files, so a green report used to prove only
+    that the files existed — not that the token still works against the API.
+    """
+    if not authenticated:
+        return {
+            "name": "api_reachable",
+            "status": "error",
+            "detail": "Skipped: not authenticated",
+        }
+    try:
+        from gw.services.gmail import get_gmail_profile
+
+        profile = get_gmail_profile(config=config)
+    except Exception as exc:  # noqa: BLE001 - any failure here is a failed check
+        return {"name": "api_reachable", "status": "error", "detail": str(exc)}
+    return {
+        "name": "api_reachable",
+        "status": "ok",
+        "detail": f"Gmail API OK as {profile['email']} ({profile['messages_total']} messages)",
+    }
 
 
 def print_doctor_report(report: dict[str, Any]) -> None:
