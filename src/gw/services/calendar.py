@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -384,7 +385,453 @@ def create_instant_meet(
     }
 
 
+def query_freebusy(
+    emails: Sequence[str],
+    start: str,
+    end: str,
+    timezone: str = "UTC",
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Ask Google when each person is busy between two instants."""
+    service = _calendar_service(config)
+    response = execute_google_request(
+        service.freebusy().query(
+            body={
+                "timeMin": to_rfc3339(parse_date(start, timezone)),
+                "timeMax": to_rfc3339(parse_date(end, timezone)),
+                "items": [{"id": email} for email in emails],
+            }
+        )
+    )
+    calendars = []
+    for email in emails:
+        entry = response.get("calendars", {}).get(email, {})
+        calendars.append(
+            {
+                "email": email,
+                "busy": entry.get("busy", []),
+                "errors": entry.get("errors", []),
+            }
+        )
+    return {"start": start, "end": end, "calendars": calendars}
+
+
+def quick_add_event(
+    text: str,
+    calendar_id: str | None = None,
+    send_updates: str = "none",
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Create an event from a natural-language phrase, parsed by Google."""
+    service = _calendar_service(config)
+    event = execute_google_request(
+        service.events().quickAdd(
+            calendarId=calendar_id or "primary",
+            text=text,
+            sendUpdates=send_updates,
+        )
+    )
+    return {
+        "id": event.get("id"),
+        "summary": event.get("summary"),
+        "start": event.get("start", {}),
+        "html_link": event.get("htmlLink"),
+    }
+
+
+def move_calendar_event(
+    event_id: str,
+    destination: str,
+    calendar: str | None = None,
+    send_updates: str = "none",
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Move an event to another calendar, keeping its id."""
+    service = _calendar_service(config)
+    event = execute_google_request(
+        service.events().move(
+            calendarId=calendar or "primary",
+            eventId=event_id,
+            destination=destination,
+            sendUpdates=send_updates,
+        )
+    )
+    return {
+        "id": event.get("id", event_id),
+        "summary": event.get("summary"),
+        "destination": destination,
+        "html_link": event.get("htmlLink"),
+    }
+
+
+def list_event_instances(
+    event_id: str,
+    calendar_id: str | None = None,
+    max_results: int = 25,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    """Expand a recurring event into its individual occurrences."""
+    service = _calendar_service(config)
+    response = execute_google_request(
+        service.events().instances(
+            calendarId=calendar_id or "primary",
+            eventId=event_id,
+            maxResults=max_results,
+        )
+    )
+    return [
+        {
+            "id": item.get("id"),
+            "summary": item.get("summary", "(No title)"),
+            "start": item.get("start", {}),
+            "end": item.get("end", {}),
+            "status": item.get("status"),
+        }
+        for item in response.get("items", [])
+    ]
+
+
+def create_calendar(
+    summary: str,
+    timezone: str,
+    description: str | None = None,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Create a brand new secondary calendar."""
+    service = _calendar_service(config)
+    body: dict[str, Any] = {"summary": summary, "timeZone": timezone}
+    if description:
+        body["description"] = description
+    created = execute_google_request(service.calendars().insert(body=body))
+    return {
+        "id": created.get("id"),
+        "summary": created.get("summary", summary),
+        "timezone": timezone,
+    }
+
+
+def delete_calendar(calendar_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = _calendar_service(config)
+    execute_google_request(service.calendars().delete(calendarId=calendar_id))
+    return {"id": calendar_id, "deleted": True}
+
+
+def list_calendar_acl(
+    calendar_id: str | None = None,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    """Show who has access to a calendar."""
+    service = _calendar_service(config)
+    response = execute_google_request(
+        service.acl().list(calendarId=calendar_id or "primary")
+    )
+    rules = []
+    for item in response.get("items", []):
+        scope = item.get("scope", {})
+        rules.append(
+            {
+                "rule_id": item.get("id"),
+                "email": scope.get("value", ""),
+                "scope_type": scope.get("type"),
+                "role": item.get("role"),
+            }
+        )
+    return rules
+
+
+def share_calendar(
+    calendar_id: str | None,
+    email: str,
+    role: str = "reader",
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _calendar_service(config)
+    rule = execute_google_request(
+        service.acl().insert(
+            calendarId=calendar_id or "primary",
+            body={"role": role, "scope": {"type": "user", "value": email}},
+        )
+    )
+    return {"rule_id": rule.get("id"), "email": email, "role": rule.get("role", role)}
+
+
+def unshare_calendar(
+    calendar_id: str | None,
+    email: str,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Revoke someone's access, resolving their rule id first."""
+    target = calendar_id or "primary"
+    rules = list_calendar_acl(target, config=config)
+    match = next((rule for rule in rules if rule["email"] == email), None)
+    if match is None:
+        raise click.ClickException(f"{email} has no access to calendar {target!r}.")
+
+    service = _calendar_service(config)
+    execute_google_request(
+        service.acl().delete(calendarId=target, ruleId=match["rule_id"])
+    )
+    return {"email": email, "calendar": target, "removed": True}
+
+
 def register_calendar_commands(group: click.Group) -> None:
+    @group.command("freebusy")
+    @click.argument("emails", nargs=-1, required=True)
+    @click.option("--start", required=True, help="Window start (YYYY-MM-DD or ISO 8601).")
+    @click.option("--end", required=True, help="Window end (YYYY-MM-DD or ISO 8601).")
+    @json_option
+    @click.pass_context
+    def freebusy_command(
+        ctx: click.Context,
+        emails: tuple[str, ...],
+        start: str,
+        end: str,
+        json_output: bool | None,
+    ) -> None:
+        """Show when people are busy. Pass one or more emails."""
+        config = ctx.obj["config"]
+        data = query_freebusy(
+            emails=list(emails),
+            start=start,
+            end=end,
+            timezone=config.timezone,
+            config=config,
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+            return
+        print_human(f"Free/busy {start} → {end}:", emoji="🗓️")
+        for entry in data["calendars"]:
+            if entry["errors"]:
+                detail = entry["errors"][0].get("reason", "error")
+                print_human(f"  • {entry['email']}: ⚠️  {detail}")
+            elif not entry["busy"]:
+                print_human(f"  • {entry['email']}: free all window")
+            else:
+                print_human(f"  • {entry['email']}: {len(entry['busy'])} busy block(s)")
+                for slot in entry["busy"]:
+                    print_human(f"      {slot.get('start')} → {slot.get('end')}")
+
+    @group.command("quick-add")
+    @click.argument("text")
+    @click.option("--calendar", "calendar_id", default=None, help="Calendar ID to use.")
+    @click.option(
+        "--send-updates",
+        type=click.Choice(["none", "all", "externalOnly"]),
+        default="none",
+        show_default=True,
+        help="Whether Google emails the guests.",
+    )
+    @json_option
+    @click.pass_context
+    def quick_add_command(
+        ctx: click.Context,
+        text: str,
+        calendar_id: str | None,
+        send_updates: str,
+        json_output: bool | None,
+    ) -> None:
+        """Create an event from plain language, e.g. "Lunch with Ana tomorrow 12pm"."""
+        config = ctx.obj["config"]
+        data = quick_add_event(
+            text=text,
+            calendar_id=calendar_id or config.default_calendar,
+            send_updates=send_updates,
+            config=config,
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Event created: {data['summary']} ({data['id']})")
+            if data.get("html_link"):
+                print_human(f"  {data['html_link']}")
+
+    @group.command("move")
+    @click.argument("event_id")
+    @click.argument("destination")
+    @click.option("--calendar", default=None, help="Calendar the event is in now.")
+    @click.option(
+        "--send-updates",
+        type=click.Choice(["none", "all", "externalOnly"]),
+        default="none",
+        show_default=True,
+        help="Whether Google emails the guests.",
+    )
+    @json_option
+    @click.pass_context
+    def move_command(
+        ctx: click.Context,
+        event_id: str,
+        destination: str,
+        calendar: str | None,
+        send_updates: str,
+        json_output: bool | None,
+    ) -> None:
+        """Move an event to another calendar. The event keeps its ID."""
+        config = ctx.obj["config"]
+        data = move_calendar_event(
+            event_id=event_id,
+            destination=destination,
+            calendar=calendar or config.default_calendar,
+            send_updates=send_updates,
+            config=config,
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Event {data['id']} moved to {destination}.")
+
+    @group.command("instances")
+    @click.argument("event_id")
+    @click.option("--calendar", "calendar_id", default=None, help="Calendar containing the event.")
+    @click.option("--max", "max_results", default=25, type=int, show_default=True)
+    @json_option
+    @click.pass_context
+    def instances_command(
+        ctx: click.Context,
+        event_id: str,
+        calendar_id: str | None,
+        max_results: int,
+        json_output: bool | None,
+    ) -> None:
+        """List the individual occurrences of a recurring event."""
+        config = ctx.obj["config"]
+        data = list_event_instances(
+            event_id=event_id,
+            calendar_id=calendar_id or config.default_calendar,
+            max_results=max_results,
+            config=config,
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        elif not data:
+            print_human("No instances found.", emoji="📅")
+        else:
+            print_human(f"Instances ({len(data)}):", emoji="📅")
+            for item in data:
+                when = item["start"].get("dateTime") or item["start"].get("date", "")
+                cancelled = " [CANCELLED]" if item.get("status") == "cancelled" else ""
+                print_human(f"  • {when}{cancelled} — {item['summary']}")
+                print_human(f"    ID: {item['id']}")
+
+    @group.command("create-calendar")
+    @click.argument("summary")
+    @click.option("--description", default=None, help="Calendar description.")
+    @click.option("--timezone", "timezone_override", default=None, help="Calendar timezone.")
+    @json_option
+    @click.pass_context
+    def create_calendar_command(
+        ctx: click.Context,
+        summary: str,
+        description: str | None,
+        timezone_override: str | None,
+        json_output: bool | None,
+    ) -> None:
+        """Create a new secondary calendar."""
+        config = ctx.obj["config"]
+        data = create_calendar(
+            summary=summary,
+            timezone=timezone_override or config.timezone,
+            description=description,
+            config=config,
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Calendar created: {data['summary']}")
+            print_human(f"  ID: {data['id']}")
+
+    @group.command("delete-calendar")
+    @click.argument("calendar_id")
+    @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation.")
+    @json_option
+    @click.pass_context
+    def delete_calendar_command(
+        ctx: click.Context, calendar_id: str, yes: bool, json_output: bool | None
+    ) -> None:
+        """Delete a secondary calendar and every event in it. Cannot be undone."""
+        if not yes:
+            click.confirm(
+                f"Delete calendar {calendar_id} and all its events? This cannot be undone.",
+                abort=True,
+            )
+        data = delete_calendar(calendar_id, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"Calendar {calendar_id} deleted.")
+
+    @group.command("acl")
+    @click.option("--calendar", "calendar_id", default=None, help="Calendar to inspect.")
+    @json_option
+    @click.pass_context
+    def acl_command(
+        ctx: click.Context, calendar_id: str | None, json_output: bool | None
+    ) -> None:
+        """Show who has access to a calendar."""
+        config = ctx.obj["config"]
+        data = list_calendar_acl(calendar_id or config.default_calendar, config=config)
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        elif not data:
+            print_human("No access rules found.", emoji="🔐")
+        else:
+            print_human(f"Access rules ({len(data)}):", emoji="🔐")
+            for rule in data:
+                who = rule["email"] or rule["scope_type"]
+                print_human(f"  • {who} — {rule['role']}")
+
+    @group.command("share")
+    @click.argument("email")
+    @click.option("--calendar", "calendar_id", default=None, help="Calendar to share.")
+    @click.option(
+        "--role",
+        type=click.Choice(["reader", "writer", "owner", "freeBusyReader"]),
+        default="reader",
+        show_default=True,
+    )
+    @json_option
+    @click.pass_context
+    def share_calendar_command(
+        ctx: click.Context,
+        email: str,
+        calendar_id: str | None,
+        role: str,
+        json_output: bool | None,
+    ) -> None:
+        """Give someone access to a calendar."""
+        config = ctx.obj["config"]
+        data = share_calendar(
+            calendar_id or config.default_calendar, email, role=role, config=config
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"{email} can now access the calendar as {data['role']}.")
+
+    @group.command("unshare")
+    @click.argument("email")
+    @click.option("--calendar", "calendar_id", default=None, help="Calendar to revoke access to.")
+    @click.option("-y", "--yes", is_flag=True, help="Skip the confirmation.")
+    @json_option
+    @click.pass_context
+    def unshare_calendar_command(
+        ctx: click.Context,
+        email: str,
+        calendar_id: str | None,
+        yes: bool,
+        json_output: bool | None,
+    ) -> None:
+        """Revoke someone's access to a calendar."""
+        config = ctx.obj["config"]
+        if not yes:
+            click.confirm(f"Remove {email}'s access?", abort=True)
+        data = unshare_calendar(calendar_id or config.default_calendar, email, config=config)
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_success(f"{email} no longer has access.")
+
     @group.command("today")
     @click.option("--all", "all_calendars", is_flag=True, help="Include all calendars.")
     @json_option
