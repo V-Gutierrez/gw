@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import time
 import tomllib
+from contextlib import suppress
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -26,21 +28,19 @@ def _detect_timezone() -> str:
     except OSError:
         pass
 
-    try:
-        from datetime import datetime, timezone
+    # Both probes below are best-effort: a failure just falls through to the next
+    # source, and the function always has a literal to return.
+    with suppress(OSError, ValueError, AttributeError):
+        from datetime import datetime
 
-        local_tz = datetime.now(timezone.utc).astimezone().tzinfo
+        local_tz = datetime.now(UTC).astimezone().tzinfo
         tz_name = str(local_tz)
         if tz_name and "/" in tz_name:
             return tz_name
-    except Exception:
-        pass
 
-    try:
+    with suppress(AttributeError, IndexError):
         if hasattr(time, "tzname") and time.tzname[0] and "/" in time.tzname[0]:
             return time.tzname[0]
-    except Exception:
-        pass
 
     return "America/Sao_Paulo"
 
@@ -154,7 +154,7 @@ def load_config(path: Path | None = None, profile: str | None = None) -> GWConfi
     raw = path.read_text(encoding="utf-8")
     data = tomllib.loads(raw)
     if not isinstance(data, dict):
-        raise ValueError("Config file must contain a TOML object.")
+        raise ValueError("Config file must contain a TOML object.")  # noqa: TRY004
 
     known, extra = _parse_known_values(data)
 

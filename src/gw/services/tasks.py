@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import click
@@ -18,7 +18,7 @@ def _format_due_date(value: str) -> str:
     text = value.strip()
     try:
         if len(text) == 10:
-            parsed = datetime.strptime(text, "%Y-%m-%d")
+            parsed = datetime.strptime(text, "%Y-%m-%d")  # noqa: DTZ007 - date only
         else:
             normalized = text.replace("Z", "+00:00")
             parsed = datetime.fromisoformat(normalized)
@@ -103,7 +103,7 @@ def complete_task(
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     service = _tasks_service(config)
-    completed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
+    completed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
     )
     updated = execute_google_request(

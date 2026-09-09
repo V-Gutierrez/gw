@@ -18,9 +18,11 @@ def atomic_write(path: Path, content: str | bytes, encoding: str = "utf-8") -> N
             with os.fdopen(fd, "wb") as handle:
                 handle.write(content)
         else:
-            with os.fdopen(fd, "wb") as raw_handle:
-                with TextIOWrapper(raw_handle, encoding=encoding) as handle:
-                    handle.write(content)
+            with (
+                os.fdopen(fd, "wb") as raw_handle,
+                TextIOWrapper(raw_handle, encoding=encoding) as handle,
+            ):
+                handle.write(content)
         os.replace(tmp, path)
     except BaseException:
         os.unlink(tmp)
@@ -66,7 +68,7 @@ def parse_date(value: str, timezone: str = "UTC") -> datetime:
     tz = ZoneInfo(timezone)
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
         try:
-            parsed = datetime.strptime(value, fmt)
+            parsed = datetime.strptime(value, fmt)  # noqa: DTZ007 - tz applied below
             return parsed.replace(tzinfo=tz)
         except ValueError:
             continue
@@ -211,7 +213,7 @@ def format_event_time(event: dict[str, Any]) -> str:
     if not date_time:
         return "Unknown time"
     try:
-        parsed = datetime.fromisoformat(date_time.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(date_time)
         return parsed.strftime("%Y-%m-%d %H:%M")
     except ValueError:
         return date_time

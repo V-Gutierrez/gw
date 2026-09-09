@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import httplib2
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
 import click
+import httplib2
+import pytest
 from click.testing import CliRunner
 from google.auth.exceptions import RefreshError, TransportError
 from googleapiclient.errors import HttpError
@@ -26,7 +26,6 @@ from gw.auth import (
 )
 from gw.config import GWConfig
 from gw.errors import GwAuthError, GwConfigError
-
 
 FAKE_TOKEN_DATA = {
     "token": "fake-access-token",

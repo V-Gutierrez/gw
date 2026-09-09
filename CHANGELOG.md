@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.6.0 (2026-09-09)
+
+### Features
+- `gw gmail send`, `draft`, `reply` and `forward` now take `--attachment PATH` (repeatable). Files go out as raw binary with the MIME type resolved from the filename, so a signed PDF arrives intact instead of needing a hand-written Gmail API call
+- All four commands also take `--body-file PATH`, so an agent-generated body no longer has to survive shell escaping. `--body-file` and the positional `BODY` are mutually exclusive
+- `gw gmail reply` and `gw gmail forward` now take `--cc` and `--bcc`. Reply still keeps `In-Reply-To`, `References` and the original `threadId`
+- `gw gmail search` now takes `--after` (`6h`, `24h`, `7d`), matching `gw gmail list`
+- Added `gw drive delete <file_id>` (trashes by default, `--permanent` with a confirmation for a real delete), `gw drive rename <file_id> NAME` and `gw drive unshare <file_id> EMAIL`
+- `gw calendar create` and `gw calendar update` now take `--attendees` (repeatable) and `--location`; `update` also takes `--reminder`. Google only emails guests when you pass `--send-updates`, so the default stays silent
+- `gw drive list/search/download/info` now see files in shared drives
+
+### Fixes
+- A non-ASCII attachment filename is sent as RFC 2231 `filename*=UTF-8''…` instead of being mangled
+- `datetime.fromisoformat` is now given the API's `Z` timestamps directly, dropping three hand-rolled `Z` → `+00:00` rewrites that Python 3.11 made redundant
+
+### Notes
+- A message without attachments is still a single `text/plain` part, byte for byte what gw sent before 0.6.0. No existing flag changed meaning
+- Attachments are **not** exposed through the MCP server yet — the MCP tools stay read-only for attachments (`gmail_attachments`, `gmail_download_attachments`)
+- The lint gate now pins `ruff>=0.16.3,<0.17`. The repo previously pinned `ruff>=0.4` and selected no rules, so the enforced rule set silently grew to 413 rules with the installed ruff
+
+### Roadmap (v0.7.0+)
+- Gmail attachments exposed through the MCP server
+- `gw sheets append` for appending rows
+- `gw tasks update` (title/notes/due) and `gw tasks uncomplete`
+- `gw contacts create` / `gw contacts delete`
+- Docs write support (create/edit via `documents.batchUpdate`)
+- Per-event explicit timezone on `gw calendar create`
+- Cell formatting for Sheets
+- Multi-profile reporting in `gw doctor`
+
 ## v0.5.2 (2026-08-14)
 
 ### Features

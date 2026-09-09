@@ -563,9 +563,12 @@ def download_gmail_attachments(
 def search_gmail_messages(
     query: str,
     max_results: int = 10,
+    after: str | None = None,
     config: GWConfig | None = None,
 ) -> list[dict[str, Any]]:
-    return list_gmail_messages(max_results=max_results, query=query, config=config)
+    return list_gmail_messages(
+        max_results=max_results, query=query, after=after, config=config
+    )
 
 
 def get_gmail_thread(message_id: str, config: GWConfig | None = None) -> dict[str, Any]:
@@ -950,16 +953,18 @@ def register_gmail_commands(group: click.Group) -> None:
     @group.command("search")
     @click.argument("query")
     @click.option("--max", "max_results", default=10, type=int, show_default=True)
+    @click.option("--after", default=None, help="Relative date like 6h, 24h, or 7d.")
     @json_option
     @click.pass_context
     def search_command(
         ctx: click.Context,
         query: str,
         max_results: int,
+        after: str | None,
         json_output: bool | None,
     ) -> None:
         messages = search_gmail_messages(
-            query=query, max_results=max_results, config=ctx.obj["config"]
+            query=query, max_results=max_results, after=after, config=ctx.obj["config"]
         )
         if use_json_output(ctx, json_output):
             print_json(messages)

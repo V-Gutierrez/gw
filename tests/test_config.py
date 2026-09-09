@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 from unittest.mock import patch
 
-from gw.config import GWConfig, load_config, DEFAULTS
+from gw.config import DEFAULTS, GWConfig, load_config
 
 
 def test_defaults():
@@ -82,17 +83,15 @@ def test_load_profile_uses_profile_token_suffix(tmp_path: Path):
 def test_load_profile_merges_profile_table_overrides(tmp_path: Path):
     config_file = tmp_path / "config.toml"
     config_file.write_text(
-        "\n".join(
-            [
-                'timezone = "America/Sao_Paulo"',
-                'token_path = "/tmp/base-token.json"',
-                "timeout_seconds = 45",
-                "",
-                "[profiles.work]",
-                'timezone = "Europe/London"',
-                'credentials_path = "/tmp/work-creds.json"',
-            ]
-        )
+        textwrap.dedent("""\
+            timezone = "America/Sao_Paulo"
+            token_path = "/tmp/base-token.json"
+            timeout_seconds = 45
+
+            [profiles.work]
+            timezone = "Europe/London"
+            credentials_path = "/tmp/work-creds.json"\
+        """)
     )
 
     cfg = load_config(config_file, profile="work")
@@ -106,12 +105,10 @@ def test_load_profile_merges_profile_table_overrides(tmp_path: Path):
 def test_load_profile_respects_explicit_profile_token_path(tmp_path: Path):
     config_file = tmp_path / "config.toml"
     config_file.write_text(
-        "\n".join(
-            [
-                "[profiles.work]",
-                'token_path = "/tmp/custom-work-token.json"',
-            ]
-        )
+        textwrap.dedent("""\
+            [profiles.work]
+            token_path = "/tmp/custom-work-token.json"\
+        """)
     )
 
     cfg = load_config(config_file, profile="work")

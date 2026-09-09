@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import click
 from typing import Any
+
+import click
 
 from gw.auth import build_service, execute_google_request
 from gw.config import GWConfig

@@ -63,7 +63,7 @@ def run_cli(argv: Sequence[str] | None = None, *, prog_name: str = "gw") -> int:
     except click.ClickException as exc:
         render_error(_format_click_error(exc), EXIT_GENERAL, use_json=use_json)
         return EXIT_GENERAL
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - last resort: no traceback reaches the user
         render_error(str(exc), EXIT_GENERAL, use_json=use_json)
         return EXIT_GENERAL
 

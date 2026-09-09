@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from click.testing import CliRunner
 from unittest.mock import MagicMock, patch
+
+from click.testing import CliRunner
 
 from gw import __version__
 from gw.cli import main, run_cli
 from gw.config import DEFAULTS
 from gw.errors import EXIT_AUTH, EXIT_CONFIG, EXIT_GENERAL, GwConfigError
-
 
 runner = CliRunner()
 

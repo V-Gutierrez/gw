@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -75,10 +75,10 @@ def _event_sort_key(event: dict[str, Any]) -> tuple[datetime, str]:
     start_data = event.get("start", {})
     value = start_data.get("dateTime") or start_data.get("date")
     if not value:
-        return (datetime.max.replace(tzinfo=timezone.utc), event.get("id") or "")
+        return (datetime.max.replace(tzinfo=UTC), event.get("id") or "")
 
     if "dateTime" in start_data:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     else:
         parsed = datetime.fromisoformat(f"{value}T00:00:00+00:00")
     return (parsed, event.get("id") or "")
@@ -168,7 +168,7 @@ def get_calendar_next(
     for event in events:
         start_data = event.get("start", {})
         if "dateTime" in start_data:
-            start = datetime.fromisoformat(start_data["dateTime"].replace("Z", "+00:00"))
+            start = datetime.fromisoformat(start_data["dateTime"])
             if start >= now:
                 return event
         elif "date" in start_data:

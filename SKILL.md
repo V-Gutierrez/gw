@@ -27,10 +27,14 @@ description: >
 
 ```bash
 gw auth login           # Authorize via browser OAuth
+gw auth login --headless  # No browser: prints the URL, you paste the redirect back
 gw auth logout          # Revoke and remove stored token
 gw auth status          # Show current auth status / which account
 gw auth setup           # Interactive setup wizard (config.toml)
 ```
+
+`--headless` uses a loopback `redirect_uri` (`http://localhost`, override with
+`--redirect-uri`). Paste the **whole** redirect URL back, not just the code.
 
 ---
 
@@ -40,11 +44,18 @@ gw auth setup           # Interactive setup wizard (config.toml)
 ```bash
 gw gmail list                        # 10 most recent emails
 gw gmail list --max 20               # 20 most recent
+gw gmail list --unread               # Unread only
+gw gmail list --after 6h             # Last 6 hours (also 24h, 7d)
+gw gmail list --query "from:boss@example.com"
 gw gmail read <message_id>           # Read full email body
 gw gmail thread <thread_id>          # Show full thread
 gw gmail search "query"              # Search emails (Gmail query syntax)
+gw gmail search "invoice" --after 7d # Search narrowed to the last 7 days
 gw gmail count                       # Count unread messages
 ```
+
+`--after` takes `6h`, `24h` or `7d` and becomes a `newer_than:` filter, which is
+hour-granular. Gmail's own `after:` is day-granular, so prefer `--after`.
 
 ### Send / Reply / Forward
 ```bash
@@ -55,8 +66,38 @@ gw gmail send "to@example.com" "Subject" "Body" --bcc "bcc@example.com"
 gw gmail draft "to@example.com" "Subject" "Body text"
 
 gw gmail reply <message_id> "Reply body"
-gw gmail forward <message_id> "to@example.com"
+gw gmail reply <message_id> "Reply body" --cc "cc@example.com"
+gw gmail forward <message_id> "to@example.com" --cc "cc@example.com"
 ```
+
+**Attachments** — `--attachment` is repeatable and works on all four commands:
+
+```bash
+gw gmail send "to@example.com" "Signed contract" "See attached." \
+  --attachment ~/docs/contract-signed.pdf \
+  --attachment ~/docs/annex.jpg
+gw gmail reply <message_id> "Signed and attached." \
+  --attachment ~/docs/contract-signed.pdf --cc "broker@example.com"
+gw gmail forward <message_id> "to@example.com" --attachment ~/docs/extra.pdf
+gw gmail draft "to@example.com" "Subject" "Body" --attachment ~/docs/a.pdf
+```
+
+**Long bodies** — `--body-file` avoids shell escaping. It replaces the positional
+`BODY`; passing both is an error, passing neither is an error:
+
+```bash
+gw gmail send "to@example.com" "Subject" --body-file /tmp/body.txt
+gw gmail reply <message_id> --body-file /tmp/reply.txt --attachment /tmp/a.pdf
+```
+
+Notes:
+- Files are sent as raw binary with the MIME type resolved from the filename
+  (fallback `application/octet-stream`). A PDF arrives as a PDF.
+- Non-ASCII filenames are encoded as RFC 2231 `filename*=UTF-8''…`.
+- `reply` keeps `In-Reply-To`, `References` and the original `threadId`.
+- `forward` does **not** re-send the original attachments. Pull them with
+  `gw gmail download <id>` first, then pass them with `--attachment`.
+- Attachments are not exposed through the MCP server yet (see `mcp_server.py`).
 
 ### Manage
 ```bash
@@ -65,7 +106,9 @@ gw gmail mark-unread <message_id>    # Mark as unread
 gw gmail archive <message_id>        # Archive email
 gw gmail trash <message_id>          # Move to trash
 gw gmail label <message_id> LABEL    # Apply label
+gw gmail label <message_id> LABEL --remove   # Remove label
 gw gmail star <message_id>           # Star a message
+gw gmail star <message_id> --remove  # Unstar a message
 ```
 
 ### Attachments
@@ -117,11 +160,23 @@ gw calendar create "Birthday" "2026-03-27" "2026-03-28" --all-day
 gw calendar create "Weekly Sync" "2026-03-27T10:00:00" "2026-03-27T11:00:00" \
   --recurrence "RRULE:FREQ=WEEKLY;BYDAY=FR"
 
+# Guests and location
+gw calendar create "Review" "2026-09-15T14:00:00" "2026-09-15T15:00:00" \
+  --attendees "ana@example.com" --attendees "bob@example.com" \
+  --location "Lisbon office" \
+  --send-updates all
+
 gw calendar update <event_id>        # Update event
+gw calendar update <event_id> --location "Room 2" --reminder 10
+gw calendar update <event_id> --attendees "ana@example.com"  # REPLACES the guest list
 gw calendar delete <event_id>        # Delete event
 gw meet create                       # Create instant Meet link
 gw meet create --title "Team Sync"   # Custom instant meeting title
 ```
+
+`--attendees` is repeatable. On `update` it **replaces** the whole guest list, so
+pass every guest you want to keep. Google only emails guests when you pass
+`--send-updates all` (or `externalOnly`); the default is `none`, so nothing is sent.
 
 ### JSON output
 ```bash
@@ -143,8 +198,16 @@ gw drive upload /path/to/file --folder "folder_id"
 gw drive download <file_id>          # Download file
 gw drive mkdir "Projects"           # Create folder
 gw drive share <file_id> user@example.com --role writer
+gw drive unshare <file_id> user@example.com   # Remove that person's access
+gw drive rename <file_id> "New name"          # Rename file or folder
+gw drive delete <file_id>            # Move to trash (recoverable)
+gw drive delete <file_id> --permanent         # Real delete; asks to confirm
+gw drive delete <file_id> --permanent --yes   # Skip the confirmation
 gw drive info <file_id>              # Show metadata
 ```
+
+`delete` trashes by default because that is recoverable. `--permanent` cannot be
+undone. `list`, `search`, `download` and `info` include files in shared drives.
 
 ### JSON output
 ```bash
@@ -253,9 +316,17 @@ gw --profile personal gmail list
 
 ## Agent Rules
 
-1. **Calendar:** Always use `--all` unless user explicitly asks for primary only
-2. **Gmail send:** Show draft (to/subject/body), get confirmation, then execute
-3. **JSON:** Use `--json` when output needs to be parsed/processed programmatically
-4. **Auth:** Token never expires — no troubleshooting needed
-5. **Timezone:** Uses `America/Sao_Paulo` automatically
+1. **Calendar:** Always use `--all` unless the user explicitly asks for primary only
+2. **Gmail send:** Show the draft (to/subject/body/attachments), get confirmation,
+   then execute. To attach files use `gw gmail send|reply|forward|draft
+   --attachment PATH` (repeatable) — never call the Gmail API by hand
+3. **JSON:** Use `--json` when output needs to be parsed programmatically
+4. **Auth:** The token **does** expire and is refreshed automatically by the refresh
+   token. If the refresh fails, gw returns `Authentication refresh failed` /
+   `Authentication expired` → run `gw auth login` (or `gw auth login --headless`).
+   Diagnose with `gw auth status` / `gw doctor`
+5. **Timezone:** Comes from `config.toml` (`gw config show`); when unset it is
+   auto-detected from the system. Do not assume a fixed zone in event datetimes
+6. **Secrets:** If gw needs Keychain secrets, use `kc run -- gw <cmd>`
+   (process-scoped, not `eval "$(kc env)"`)
 
