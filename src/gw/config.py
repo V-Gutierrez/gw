@@ -66,12 +66,18 @@ def _default_path(filename: str) -> str:
     return f"~/.config/gw/{filename}"
 
 
+DEFAULT_SIGNATURE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+
 DEFAULTS: dict[str, Any] = {
     "timezone": "America/Sao_Paulo",
     "default_calendar": "primary",
     "credentials_path": _default_path("credentials.json"),
     "token_path": _default_path("token.json"),
     "timeout_seconds": 30,
+    "signature": True,
+    "signature_address": None,
+    "signature_cache_path": None,
+    "signature_cache_ttl_seconds": DEFAULT_SIGNATURE_CACHE_TTL_SECONDS,
 }
 
 
@@ -83,6 +89,10 @@ class GWConfig:
     credentials_path: str = DEFAULTS["credentials_path"]
     token_path: str = DEFAULTS["token_path"]
     timeout_seconds: int = DEFAULTS["timeout_seconds"]
+    signature: bool = DEFAULTS["signature"]
+    signature_address: str | None = DEFAULTS["signature_address"]
+    signature_cache_path: str | None = DEFAULTS["signature_cache_path"]
+    signature_cache_ttl_seconds: int = DEFAULTS["signature_cache_ttl_seconds"]
     _extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -104,6 +114,10 @@ class GWConfig:
             "credentials_path": self.credentials_path,
             "token_path": self.token_path,
             "timeout_seconds": self.timeout_seconds,
+            "signature": self.signature,
+            "signature_address": self.signature_address,
+            "signature_cache_path": self.signature_cache_path,
+            "signature_cache_ttl_seconds": self.signature_cache_ttl_seconds,
             **self._extra,
         }
         if self.profile is not None:
@@ -126,6 +140,10 @@ def _parse_known_values(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         "credentials_path",
         "token_path",
         "timeout_seconds",
+        "signature",
+        "signature_address",
+        "signature_cache_path",
+        "signature_cache_ttl_seconds",
     }
     known = {key: value for key, value in data.items() if key in known_keys}
     extra = {key: value for key, value in data.items() if key not in known_keys}
@@ -135,10 +153,25 @@ def _parse_known_values(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         if key in known and not isinstance(known[key], str):
             raise ValueError(f"Config value {key!r} must be a string.")
 
+    for key in ("signature_address", "signature_cache_path"):
+        value = known.get(key)
+        if key in known and value is not None and not isinstance(value, str):
+            raise ValueError(f"Config value {key!r} must be a string or omitted.")
+
+    if "signature" in known and not isinstance(known["signature"], bool):
+        raise ValueError("Config value 'signature' must be a boolean.")
+
     if "timeout_seconds" in known:
         timeout_value = known["timeout_seconds"]
         if not isinstance(timeout_value, int) or timeout_value <= 0:
             raise ValueError("Config value 'timeout_seconds' must be a positive integer.")
+
+    if "signature_cache_ttl_seconds" in known:
+        ttl_value = known["signature_cache_ttl_seconds"]
+        if not isinstance(ttl_value, int) or ttl_value <= 0:
+            raise ValueError(
+                "Config value 'signature_cache_ttl_seconds' must be a positive integer."
+            )
 
     return known, extra
 

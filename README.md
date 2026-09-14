@@ -122,11 +122,18 @@ credentials_path = "~/.config/gw/credentials.json"
 token_path = "~/.config/gw/token.json"
 timeout_seconds = 30
 
+# Account signature (see "Account Signature" below)
+signature = true                        # attach the signature Gmail has for the account
+signature_address = "victor@example.com" # pick among aliases (default: the account default)
+signature_cache_path = "~/.config/gw/signature.json"  # default: signature-<profile>.json
+signature_cache_ttl_seconds = 604800    # a week
+
 [profiles.work]
 credentials_path = "~/.config/gw/work-credentials.json"
 
 [profiles.personal]
 timezone = "Europe/London"
+signature = false                       # this mailbox has no signature to attach
 ```
 
 Inspect the active config with:
@@ -137,6 +144,28 @@ gw config show --json
 gw config path
 gw --profile work config show --json
 ```
+
+## Account Signature
+
+Gmail's signature is a compose-time setting: the web UI appends it, the Gmail API does
+not. gw builds the raw MIME itself, so it reads the signature from the account
+(`users.settings.sendAs`) and attaches it to everything it sends — `send`, `draft`,
+`reply`, `forward` and `draft-edit`.
+
+The signature is cached for a week at `~/.config/gw/signature-<profile>.json`, so sending
+does not pay for an extra API call. If the API is unreachable the cached copy is used;
+an account with no signature configured keeps sending the plain message it always did.
+
+```bash
+gw gmail signature                 # what the next message will carry
+gw gmail signature --refresh       # ignore the cache and read Gmail again
+gw gmail signature --json
+gw gmail send "to@example.com" "Subject" "Body" --no-signature   # this one time only
+gw --profile personal gmail send "to@example.com" "Subject" "Body"
+```
+
+`--signature / --no-signature` is available on every sending command and beats the config
+for that single message.
 
 ## Usage
 
@@ -172,6 +201,8 @@ gw gmail mark-unread 18c0ffee --json
 gw gmail list --query "from:alice@example.com" --json
 gw gmail read 18c0ffee
 gw gmail send "alice@example.com" "Subject" "Hello"
+gw gmail send "alice@example.com" "Subject" "Hello" --no-signature
+gw gmail signature --json
 gw gmail draft "alice@example.com" "Draft subject" "Hello later"
 gw gmail trash 18c0ffee
 gw gmail archive 18c0ffee

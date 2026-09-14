@@ -90,6 +90,27 @@ gw gmail send "to@example.com" "Subject" --body-file /tmp/body.txt
 gw gmail reply <message_id> --body-file /tmp/reply.txt --attachment /tmp/a.pdf
 ```
 
+**Account signature** — the signature configured in Gmail for the account is attached
+automatically. Gmail's signature is a compose-time setting, so the API never applied it;
+gw reads it from `users.settings.sendAs`, caches it for a week and appends it:
+
+```bash
+gw gmail signature                   # show what the next message will carry
+gw gmail signature --refresh         # bypass the cache and re-read Gmail
+gw gmail send "to@example.com" "Subject" "Body" --no-signature   # skip it once
+gw gmail reply <message_id> "Sem assinatura" --no-signature
+```
+
+- `--signature / --no-signature` exists on `send`, `draft`, `draft-edit`, `reply` and
+  `forward`, and beats the config for that one message
+- Config: `signature = false` disables it for a profile, `signature_address` picks among
+  aliases, `signature_cache_path` / `signature_cache_ttl_seconds` tune the cache
+- An account with no signature configured is unaffected: the message stays a plain
+  `text/plain` part
+- With a signature the body becomes `multipart/alternative` (HTML + plain text), wrapped
+  in `multipart/mixed` when you also attach files
+- `draft-edit` re-applies the signature rather than stacking a second copy
+
 Notes:
 - Files are sent as raw binary with the MIME type resolved from the filename
   (fallback `application/octet-stream`). A PDF arrives as a PDF.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import mimetypes
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from email import encoders, message_from_bytes
 from email.message import Message
 from email.mime.base import MIMEBase
@@ -16,6 +16,14 @@ import click
 from gw.auth import build_service, execute_google_request
 from gw.config import GWConfig
 from gw.output import json_option, print_human, print_json, print_success, use_json_output
+from gw.signature import (
+    AccountSignature,
+    append_signature,
+    cached_signature,
+    resolve_signature,
+    signature_enabled,
+    strip_signature,
+)
 from gw.utils import (
     atomic_write,
     clean_message_body,
@@ -30,6 +38,29 @@ from gw.utils import (
 
 def _gmail_service(config: GWConfig | None = None):
     return build_service("gmail", "v1", config=config)
+
+
+def _signature_option(function: Callable[..., Any]) -> Callable[..., Any]:
+    """Attach the configured account signature unless told otherwise."""
+    return click.option(
+        "--signature/--no-signature",
+        "signature",
+        default=None,
+        help="Attach the account signature. Defaults to the signature config setting.",
+    )(function)
+
+
+def _render_signature(config: GWConfig | None, override: bool | None) -> None:
+    """Name the signature that went out — cache only, so it costs no extra call.
+
+    Gmail's settings page can tell you a signature exists; it cannot tell you whether
+    the message you just sent carried it. This line closes that loop.
+    """
+    if config is None or not signature_enabled(config, override):
+        return
+    signature = cached_signature(config)
+    if signature is not None and signature.email:
+        print_human(f"Signature: {signature.email}", emoji="✍️")
 
 
 def _message_headers(message: dict[str, Any]) -> dict[str, str]:
@@ -81,6 +112,22 @@ def _attachment_part(path: Path) -> MIMEBase:
     return part
 
 
+def _body_container(body: str, signature: AccountSignature | None) -> Message:
+    """The body as a MIME part: plain text, or text+html once a signature exists.
+
+    Without a signature the result is the bare ``MIMEText(body)`` gw has always sent,
+    so an account with nothing configured in Gmail sees no change at all.
+    """
+    if signature is None:
+        return MIMEText(body)
+
+    plain, html_body = append_signature(body, signature)
+    alternative = MIMEMultipart("alternative")
+    alternative.attach(MIMEText(plain, "plain", "utf-8"))
+    alternative.attach(MIMEText(html_body, "html", "utf-8"))
+    return alternative
+
+
 def _build_mime_message(
     to: str,
     subject: str,
@@ -91,11 +138,14 @@ def _build_mime_message(
     *,
     reply_headers: dict[str, str] | None = None,
     extra_parts: Sequence[Message] | None = None,
+    signature: AccountSignature | None = None,
 ) -> tuple[Message, list[str]]:
     """Build the outgoing message, returning it with the attached filenames.
 
     Without attachments this stays a single ``text/plain`` part, byte for byte what
-    gw sent before 0.6.0. With attachments it becomes ``multipart/mixed``.
+    gw sent before 0.6.0. With attachments it becomes ``multipart/mixed``. An account
+    signature turns the body into ``multipart/alternative``, nested inside the mixed
+    container when there are files to carry.
 
     ``extra_parts`` carries MIME parts that already exist — the attachments kept
     from a draft being edited, which never touch the filesystem.
@@ -104,15 +154,16 @@ def _build_mime_message(
     kept = list(extra_parts or [])
 
     message: Message
+    container = _body_container(body, signature)
     if paths or kept:
         message = MIMEMultipart("mixed")
-        message.attach(MIMEText(body, "plain", "utf-8"))
+        message.attach(container)
         for path in paths:
             message.attach(_attachment_part(path))
         for part in kept:
             message.attach(part)
     else:
-        message = MIMEText(body)
+        message = container
 
     message["To"] = to
     message["Subject"] = subject
@@ -207,9 +258,11 @@ def send_gmail_message(
     bcc: str | None = None,
     attachments: Sequence[str | Path] | None = None,
     body_file: str | None = None,
+    signature: bool | None = None,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     service = _gmail_service(config)
+    account_signature = resolve_signature(config, service=service, override=signature)
     message, filenames = _build_mime_message(
         to=to,
         subject=subject,
@@ -217,6 +270,7 @@ def send_gmail_message(
         cc=cc,
         bcc=bcc,
         attachments=attachments,
+        signature=account_signature,
     )
 
     sent = execute_google_request(
@@ -230,6 +284,15 @@ def send_gmail_message(
     }
 
 
+def get_account_signature(
+    config: GWConfig | None = None,
+    *,
+    refresh: bool = False,
+) -> AccountSignature | None:
+    """What this profile would attach to the next message, without sending one."""
+    return resolve_signature(config, override=True, refresh=refresh)
+
+
 def create_gmail_draft(
     to: str,
     subject: str,
@@ -238,9 +301,11 @@ def create_gmail_draft(
     bcc: str | None = None,
     attachments: Sequence[str | Path] | None = None,
     body_file: str | None = None,
+    signature: bool | None = None,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     service = _gmail_service(config)
+    account_signature = resolve_signature(config, service=service, override=signature)
     message, filenames = _build_mime_message(
         to=to,
         subject=subject,
@@ -248,6 +313,7 @@ def create_gmail_draft(
         cc=cc,
         bcc=bcc,
         attachments=attachments,
+        signature=account_signature,
     )
 
     draft = execute_google_request(
@@ -360,6 +426,7 @@ def update_gmail_draft(
     attachments: Sequence[str | Path] | None = None,
     body_file: str | None = None,
     clear_attachments: bool = False,
+    signature: bool | None = None,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     """Edit a draft in place.
@@ -371,6 +438,9 @@ def update_gmail_draft(
     Attachments follow the ``--attendees`` convention: passing ``attachments`` makes
     them the complete new set, passing nothing keeps what is there, and
     ``clear_attachments`` removes them all.
+
+    The account signature is re-applied, not accumulated: a signature gw already
+    appended to this draft is dropped before the rebuild.
     """
     service = _gmail_service(config)
     parsed = _fetch_draft(service, draft_id)
@@ -379,6 +449,8 @@ def update_gmail_draft(
     new_body = current_body
     if body is not None or body_file is not None:
         new_body = _resolve_body(body, body_file)
+    new_body = strip_signature(new_body, cached_signature(config) if config else None)
+    account_signature = resolve_signature(config, service=service, override=signature)
 
     kept: list[Message] = []
     if not clear_attachments and not attachments:
@@ -392,6 +464,7 @@ def update_gmail_draft(
         bcc=bcc if bcc is not None else parsed.get("Bcc"),
         attachments=attachments,
         extra_parts=kept,
+        signature=account_signature,
     )
 
     updated = execute_google_request(
@@ -430,10 +503,12 @@ def reply_to_gmail_message(
     bcc: str | None = None,
     attachments: Sequence[str | Path] | None = None,
     body_file: str | None = None,
+    signature: bool | None = None,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     resolved_body = _resolve_body(body, body_file)
     service = _gmail_service(config)
+    account_signature = resolve_signature(config, service=service, override=signature)
     original = execute_google_request(
         service.users()
         .messages()
@@ -461,6 +536,7 @@ def reply_to_gmail_message(
         bcc=bcc,
         attachments=attachments,
         reply_headers=reply_headers,
+        signature=account_signature,
     )
 
     sent = execute_google_request(
@@ -484,9 +560,11 @@ def forward_gmail_message(
     cc: str | None = None,
     bcc: str | None = None,
     attachments: Sequence[str | Path] | None = None,
+    signature: bool | None = None,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     service = _gmail_service(config)
+    account_signature = resolve_signature(config, service=service, override=signature)
     original = execute_google_request(
         service.users().messages().get(userId="me", id=message_id, format="full")
     )
@@ -507,6 +585,7 @@ def forward_gmail_message(
         cc=cc,
         bcc=bcc,
         attachments=attachments,
+        signature=account_signature,
     )
     sent = execute_google_request(
         service.users().messages().send(userId="me", body={"raw": _encode_message(message)})
@@ -734,9 +813,7 @@ def search_gmail_messages(
     after: str | None = None,
     config: GWConfig | None = None,
 ) -> list[dict[str, Any]]:
-    return list_gmail_messages(
-        max_results=max_results, query=query, after=after, config=config
-    )
+    return list_gmail_messages(max_results=max_results, query=query, after=after, config=config)
 
 
 def _resolve_label_ids(service: Any, names: Sequence[str] | None) -> list[str]:
@@ -1052,6 +1129,7 @@ def register_gmail_commands(group: click.Group) -> None:
         type=click.Path(exists=True, dir_okay=False),
         help="Read the body from this file instead of the BODY argument.",
     )
+    @_signature_option
     @json_option
     @click.pass_context
     def send_command(
@@ -1063,9 +1141,13 @@ def register_gmail_commands(group: click.Group) -> None:
         bcc: str | None,
         attachments: tuple[str, ...],
         body_file: str | None,
+        signature: bool | None,
         json_output: bool | None,
     ) -> None:
-        """Send an email. Attach files with --attachment (repeatable)."""
+        """Send an email. Attach files with --attachment (repeatable).
+
+        The signature configured in Gmail for this account is attached by default.
+        """
         config = ctx.obj["config"]
         data = send_gmail_message(
             to=to,
@@ -1075,6 +1157,7 @@ def register_gmail_commands(group: click.Group) -> None:
             bcc=bcc,
             attachments=attachments,
             body_file=body_file,
+            signature=signature,
             config=config,
         )
         if use_json_output(ctx, json_output):
@@ -1082,6 +1165,7 @@ def register_gmail_commands(group: click.Group) -> None:
         else:
             print_success(f"Email sent! Message ID: {data.get('id')}")
             _render_sent_attachments(data)
+            _render_signature(config, signature)
 
     @group.command("draft")
     @click.argument("to")
@@ -1103,6 +1187,7 @@ def register_gmail_commands(group: click.Group) -> None:
         type=click.Path(exists=True, dir_okay=False),
         help="Read the body from this file instead of the BODY argument.",
     )
+    @_signature_option
     @json_option
     @click.pass_context
     def draft_command(
@@ -1114,9 +1199,13 @@ def register_gmail_commands(group: click.Group) -> None:
         bcc: str | None,
         attachments: tuple[str, ...],
         body_file: str | None,
+        signature: bool | None,
         json_output: bool | None,
     ) -> None:
-        """Create a draft. Attach files with --attachment (repeatable)."""
+        """Create a draft. Attach files with --attachment (repeatable).
+
+        The signature configured in Gmail for this account is attached by default.
+        """
         config = ctx.obj["config"]
         data = create_gmail_draft(
             to=to,
@@ -1126,6 +1215,7 @@ def register_gmail_commands(group: click.Group) -> None:
             bcc=bcc,
             attachments=attachments,
             body_file=body_file,
+            signature=signature,
             config=config,
         )
         if use_json_output(ctx, json_output):
@@ -1133,6 +1223,7 @@ def register_gmail_commands(group: click.Group) -> None:
         else:
             print_success(f"Draft created! Draft ID: {data.get('id')}")
             _render_sent_attachments(data)
+            _render_signature(config, signature)
 
     @group.command("drafts")
     @click.option("--max", "max_results", default=10, type=int, show_default=True)
@@ -1202,6 +1293,7 @@ def register_gmail_commands(group: click.Group) -> None:
         is_flag=True,
         help="Remove every attachment from the draft.",
     )
+    @_signature_option
     @json_option
     @click.pass_context
     def draft_edit_command(
@@ -1215,12 +1307,15 @@ def register_gmail_commands(group: click.Group) -> None:
         attachments: tuple[str, ...],
         body_file: str | None,
         clear_attachments: bool,
+        signature: bool | None,
         json_output: bool | None,
     ) -> None:
         """Edit a draft in place. Only the fields you pass change.
 
         --attachment replaces the whole attachment set; omit it to keep the files
         already on the draft, or use --clear-attachments to drop them.
+
+        The account signature is re-applied, never doubled.
         """
         if not any(
             value is not None for value in (to, subject, body, cc, bcc, body_file)
@@ -1239,6 +1334,7 @@ def register_gmail_commands(group: click.Group) -> None:
             attachments=attachments,
             body_file=body_file,
             clear_attachments=clear_attachments,
+            signature=signature,
             config=ctx.obj["config"],
         )
         if use_json_output(ctx, json_output):
@@ -1246,6 +1342,38 @@ def register_gmail_commands(group: click.Group) -> None:
         else:
             print_success(f"Draft updated! Draft ID: {data['id']}")
             _render_sent_attachments(data)
+
+    @group.command("signature")
+    @click.option("--refresh", is_flag=True, help="Ignore the cache and read Gmail again.")
+    @json_option
+    @click.pass_context
+    def signature_command(ctx: click.Context, refresh: bool, json_output: bool | None) -> None:
+        """Show the account signature gw attaches to outgoing mail.
+
+        Read from Gmail's own settings (``settings.sendAs``) and cached for a week.
+        """
+        config = ctx.obj["config"]
+        data = get_account_signature(config, refresh=refresh)
+        if use_json_output(ctx, json_output):
+            print_json(
+                {
+                    "email": data.email if data else None,
+                    "source": data.source if data else None,
+                    "chars": len(data.html) if data else 0,
+                    "enabled": signature_enabled(config),
+                    "html": data.html if data else None,
+                }
+            )
+            return
+
+        if data is None:
+            print_human("No signature attached: none configured for this account.", emoji="✍️")
+            return
+        print_human(f"Signature: {data.email} ({data.source}, {len(data.html)} chars)", emoji="✍️")
+        if not signature_enabled(config):
+            print_human("Off for this profile: signature = false in the config.", emoji="⚠️")
+        print_human("")
+        print_human(data.html)
 
     @group.command("draft-send")
     @click.argument("draft_id")
@@ -1295,6 +1423,7 @@ def register_gmail_commands(group: click.Group) -> None:
         type=click.Path(exists=True, dir_okay=False),
         help="Read the body from this file instead of the BODY argument.",
     )
+    @_signature_option
     @json_option
     @click.pass_context
     def reply_command(
@@ -1305,9 +1434,11 @@ def register_gmail_commands(group: click.Group) -> None:
         bcc: str | None,
         attachments: tuple[str, ...],
         body_file: str | None,
+        signature: bool | None,
         json_output: bool | None,
     ) -> None:
         """Reply in thread. Attach files with --attachment (repeatable)."""
+        config = ctx.obj["config"]
         data = reply_to_gmail_message(
             message_id=message_id,
             body=body,
@@ -1315,13 +1446,15 @@ def register_gmail_commands(group: click.Group) -> None:
             bcc=bcc,
             attachments=attachments,
             body_file=body_file,
-            config=ctx.obj["config"],
+            signature=signature,
+            config=config,
         )
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
             print_success(f"Reply sent! Message ID: {data.get('id')}")
             _render_sent_attachments(data)
+            _render_signature(config, signature)
 
     @group.command("forward")
     @click.argument("message_id")
@@ -1335,6 +1468,7 @@ def register_gmail_commands(group: click.Group) -> None:
         type=click.Path(exists=True, dir_okay=False),
         help="File to attach. Repeat for several.",
     )
+    @_signature_option
     @json_option
     @click.pass_context
     def forward_command(
@@ -1344,6 +1478,7 @@ def register_gmail_commands(group: click.Group) -> None:
         cc: str | None,
         bcc: str | None,
         attachments: tuple[str, ...],
+        signature: bool | None,
         json_output: bool | None,
     ) -> None:
         """Forward a message. Add extra files with --attachment (repeatable).
@@ -1351,19 +1486,22 @@ def register_gmail_commands(group: click.Group) -> None:
         The original attachments are not re-sent; attach them explicitly after
         `gw gmail download` if the recipient needs them.
         """
+        config = ctx.obj["config"]
         data = forward_gmail_message(
             message_id=message_id,
             to=to,
             cc=cc,
             bcc=bcc,
             attachments=attachments,
-            config=ctx.obj["config"],
+            signature=signature,
+            config=config,
         )
         if use_json_output(ctx, json_output):
             print_json(data)
         else:
             print_success(f"Forwarded! Message ID: {data.get('id')}")
             _render_sent_attachments(data)
+            _render_signature(config, signature)
 
     @group.command("list")
     @click.option("--max", "max_results", default=10, type=int, show_default=True)

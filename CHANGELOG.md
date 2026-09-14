@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.8.0 (2026-09-14)
+
+The signature you configured in Gmail now goes out with your mail.
+
+### Gmail — account signature
+- `send`, `draft`, `reply`, `forward` and `draft-edit` attach the signature configured
+  for the account in Gmail (Settings → General → Signature). Gmail's signature is a
+  *compose-time* setting: the web UI appends it, the API does not, and gw builds the raw
+  MIME itself — so until now every message left bare, no matter what Gmail said
+- Read from `users.settings.sendAs` — the default identity, or `signature_address` when
+  the account has aliases — and cached for a week at
+  `~/.config/gw/signature-<profile>.json`. When the API is unreachable the stale cache is
+  used: a missing signature never costs you the message
+- Message shape: with a signature the body becomes `multipart/alternative` (the
+  signature's own HTML, plus a plain-text rendering of it for text-only clients), nested
+  inside `multipart/mixed` when there are attachments. An account with no signature
+  configured still sends the bare `text/plain` part, byte for byte what 0.7.0 sent
+- `--signature / --no-signature` on every sending command overrides the config per
+  message; `signature = false` turns signatures off for a whole profile
+- `draft-edit` re-applies the signature instead of accumulating it: what gw appended
+  last time is dropped before the rebuild
+- New `gw gmail signature [--refresh] [--json]` reports what would be attached,
+  without sending anything
+- The MIME is built the same way in the MCP server, so drafts created from an agent
+  carry the same signature
+
+Verified live on 2026-09-14 against both configured identities: `victor@controlspacestorage.com`
+(2058-char HTML signature, attached) and `ainiciative@gmail.com` (no signature configured —
+output unchanged).
+
 ## v0.7.0 (2026-09-09)
 
 Coverage release: 57 commands to 98. Gmail, Calendar, Drive and Sheets now cover
