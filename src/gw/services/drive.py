@@ -157,9 +157,7 @@ def download_drive_file(
 ) -> dict[str, Any]:
     service = _drive_service(config)
     metadata = execute_google_request(
-        service.files().get(
-            fileId=file_id, fields="id,name,mimeType,size", supportsAllDrives=True
-        )
+        service.files().get(fileId=file_id, fields="id,name,mimeType,size", supportsAllDrives=True)
     )
     name = metadata.get("name", file_id)
     mime_type = metadata.get("mimeType", "application/octet-stream")
@@ -492,9 +490,7 @@ def delete_drive_revision(
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     service = _drive_service(config)
-    execute_google_request(
-        service.revisions().delete(fileId=file_id, revisionId=revision_id)
-    )
+    execute_google_request(service.revisions().delete(fileId=file_id, revisionId=revision_id))
     return {"file_id": file_id, "revision_id": revision_id, "deleted": True}
 
 

@@ -89,9 +89,7 @@ def gmail_draft(
 
     Attachments are not exposed over MCP; use `gw gmail draft --attachment PATH`.
     """
-    return create_gmail_draft(
-        to=to, subject=subject, body=body, cc=cc, bcc=bcc, config=_config()
-    )
+    return create_gmail_draft(to=to, subject=subject, body=body, cc=cc, bcc=bcc, config=_config())
 
 
 @mcp_server.tool()
@@ -437,7 +435,9 @@ def tasks_lists(max_results: int = 100) -> list[dict]:
 
 
 @mcp_server.tool()
-def tasks_list(list_id: str = "@default", max_results: int = 100, show_completed: bool = True) -> list[dict]:
+def tasks_list(
+    list_id: str = "@default", max_results: int = 100, show_completed: bool = True
+) -> list[dict]:
     return list_tasks(
         list_id=list_id,
         max_results=max_results,

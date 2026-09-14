@@ -103,9 +103,7 @@ def complete_task(
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     service = _tasks_service(config)
-    completed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
-    )
+    completed_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     updated = execute_google_request(
         service.tasks().patch(
             tasklist=list_id,

@@ -23,7 +23,9 @@ def _service() -> MagicMock:
     service = MagicMock()
     service.freebusy.return_value.query.return_value.execute.return_value = {
         "calendars": {
-            "ana@x.com": {"busy": [{"start": "2026-09-10T09:00:00Z", "end": "2026-09-10T10:00:00Z"}]},
+            "ana@x.com": {
+                "busy": [{"start": "2026-09-10T09:00:00Z", "end": "2026-09-10T10:00:00Z"}]
+            },
             "bob@x.com": {"busy": []},
         }
     }
@@ -55,7 +57,11 @@ def _service() -> MagicMock:
     }
     service.acl.return_value.list.return_value.execute.return_value = {
         "items": [
-            {"id": "user:ana@x.com", "role": "writer", "scope": {"type": "user", "value": "ana@x.com"}}
+            {
+                "id": "user:ana@x.com",
+                "role": "writer",
+                "scope": {"type": "user", "value": "ana@x.com"},
+            }
         ]
     }
     service.acl.return_value.insert.return_value.execute.return_value = {
@@ -161,9 +167,21 @@ def test_calendar_commands_are_wired() -> None:
     service = _service()
     runner = CliRunner()
     with patch("gw.services.calendar._calendar_service", return_value=service):
-        assert runner.invoke(
-            main, ["calendar", "freebusy", "ana@x.com", "--start", "2026-09-10", "--end", "2026-09-11"]
-        ).exit_code == 0
+        assert (
+            runner.invoke(
+                main,
+                [
+                    "calendar",
+                    "freebusy",
+                    "ana@x.com",
+                    "--start",
+                    "2026-09-10",
+                    "--end",
+                    "2026-09-11",
+                ],
+            ).exit_code
+            == 0
+        )
         assert runner.invoke(main, ["calendar", "quick-add", "Almoço amanhã 12h"]).exit_code == 0
         assert runner.invoke(main, ["calendar", "move", "e1", "work@g.com"]).exit_code == 0
         assert runner.invoke(main, ["calendar", "instances", "e1"]).exit_code == 0

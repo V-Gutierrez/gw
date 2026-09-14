@@ -184,9 +184,7 @@ def add_sheet_tab(
             body={"requests": [{"addSheet": {"properties": {"title": title}}}]},
         )
     )
-    properties = (
-        result.get("replies", [{}])[0].get("addSheet", {}).get("properties", {})
-    )
+    properties = result.get("replies", [{}])[0].get("addSheet", {}).get("properties", {})
     return {
         "spreadsheet_id": spreadsheet_id,
         "sheet_id": properties.get("sheetId"),

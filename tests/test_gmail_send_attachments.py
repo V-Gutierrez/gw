@@ -118,11 +118,7 @@ def _decode_raw(raw: str) -> Message:
 
 
 def _attachment_parts(message: Message) -> list[Message]:
-    return [
-        part
-        for part in message.walk()
-        if part.get_content_disposition() == "attachment"
-    ]
+    return [part for part in message.walk() if part.get_content_disposition() == "attachment"]
 
 
 # --- send ------------------------------------------------------------------
@@ -517,9 +513,7 @@ def test_cli_send_body_file_makes_body_optional(mock_build_service: MagicMock, t
     )
 
     assert result.exit_code == 0, result.output
-    assert (
-        _sent_message(service).get_payload(decode=True).decode("utf-8") == "corpo do ficheiro"
-    )
+    assert _sent_message(service).get_payload(decode=True).decode("utf-8") == "corpo do ficheiro"
 
 
 @patch("gw.services.gmail.build_service")

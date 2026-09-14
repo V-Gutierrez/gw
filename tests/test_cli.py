@@ -974,7 +974,12 @@ def test_tasks_add_json(mock_build_service: MagicMock):
 def test_tasks_complete_json(mock_build_service: MagicMock):
     service = MagicMock()
     service.tasks.return_value.patch.return_value = _mock_execute(
-        {"id": "task-1", "title": "Buy milk", "status": "completed", "completed": "2026-03-27T10:00:00Z"}
+        {
+            "id": "task-1",
+            "title": "Buy milk",
+            "status": "completed",
+            "completed": "2026-03-27T10:00:00Z",
+        }
     )
     mock_build_service.return_value = service
 

@@ -168,4 +168,6 @@ def test_sheets_commands_are_wired() -> None:
         assert runner.invoke(main, ["sheets", "create", "Novo"]).exit_code == 0
         assert runner.invoke(main, ["sheets", "info", "s1"]).exit_code == 0
         assert runner.invoke(main, ["sheets", "add-tab", "s1", "Nova"]).exit_code == 0
-        assert runner.invoke(main, ["sheets", "delete-tab", "s1", "Sheet1", "--yes"]).exit_code == 0
+        assert (
+            runner.invoke(main, ["sheets", "delete-tab", "s1", "Sheet1", "--yes"]).exit_code == 0
+        )

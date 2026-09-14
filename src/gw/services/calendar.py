@@ -522,9 +522,7 @@ def list_calendar_acl(
 ) -> list[dict[str, Any]]:
     """Show who has access to a calendar."""
     service = _calendar_service(config)
-    response = execute_google_request(
-        service.acl().list(calendarId=calendar_id or "primary")
-    )
+    response = execute_google_request(service.acl().list(calendarId=calendar_id or "primary"))
     rules = []
     for item in response.get("items", []):
         scope = item.get("scope", {})
@@ -568,9 +566,7 @@ def unshare_calendar(
         raise click.ClickException(f"{email} has no access to calendar {target!r}.")
 
     service = _calendar_service(config)
-    execute_google_request(
-        service.acl().delete(calendarId=target, ruleId=match["rule_id"])
-    )
+    execute_google_request(service.acl().delete(calendarId=target, ruleId=match["rule_id"]))
     return {"email": email, "calendar": target, "removed": True}
 
 
@@ -765,9 +761,7 @@ def register_calendar_commands(group: click.Group) -> None:
     @click.option("--calendar", "calendar_id", default=None, help="Calendar to inspect.")
     @json_option
     @click.pass_context
-    def acl_command(
-        ctx: click.Context, calendar_id: str | None, json_output: bool | None
-    ) -> None:
+    def acl_command(ctx: click.Context, calendar_id: str | None, json_output: bool | None) -> None:
         """Show who has access to a calendar."""
         config = ctx.obj["config"]
         data = list_calendar_acl(calendar_id or config.default_calendar, config=config)

@@ -591,9 +591,7 @@ class TestCLICommands:
 
         assert result.exit_code == 0
         assert "Authenticated" in result.output
-        mock_login.assert_called_once_with(
-            headless=False, config=auth_config, redirect_uri=None
-        )
+        mock_login.assert_called_once_with(headless=False, config=auth_config, redirect_uri=None)
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.login")
