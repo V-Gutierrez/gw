@@ -361,6 +361,69 @@ class TestLogin:
             login(token_path=token_path, client_secrets=secrets_path, headless=True)
 
 
+class TestLoginWithoutAPrompt:
+    """--url-only and --code split the interactive flow into two invocations.
+
+    The interactive prompt is what broke in practice: a closed terminal or an expired agent
+    session left an approved browser grant that could no longer be redeemed.
+    """
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_url_only_prints_the_url_and_stops(
+        self, mock_flow_cls: MagicMock, token_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        flow = mock_flow_cls.from_client_secrets_file.return_value
+        flow.authorization_url.return_value = (
+            "https://accounts.google.com/o/oauth2/auth?x=1",
+            "s",
+        )
+
+        with patch("gw.auth.load_credentials", return_value=None):
+            result = login(headless=True, url_only=True)
+
+        assert result is None
+        assert "https://accounts.google.com/o/oauth2/auth?x=1" in capsys.readouterr().out
+        flow.fetch_token.assert_not_called()
+        assert not token_path.exists()
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.click.prompt")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_code_is_taken_from_the_flag_not_the_prompt(
+        self,
+        mock_flow_cls: MagicMock,
+        mock_prompt: MagicMock,
+        token_path: Path,
+    ) -> None:
+        flow = mock_flow_cls.from_client_secrets_file.return_value
+        flow.authorization_url.return_value = ("https://auth", "s")
+        flow.credentials = _make_creds(valid=True)
+
+        with patch("gw.auth.load_credentials", return_value=None):
+            result = login(headless=True, code="4/0Abc")
+
+        assert result is flow.credentials
+        mock_prompt.assert_not_called()
+        flow.fetch_token.assert_called_once_with(code="4/0Abc")
+        assert token_path.exists()
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_code_accepts_the_whole_redirect_url(
+        self, mock_flow_cls: MagicMock, token_path: Path
+    ) -> None:
+        flow = mock_flow_cls.from_client_secrets_file.return_value
+        flow.authorization_url.return_value = ("https://auth", "s")
+        flow.credentials = _make_creds(valid=True)
+        pasted = "http://localhost/?state=gwcli&code=4/0Axyz&scope=openid"
+
+        with patch("gw.auth.load_credentials", return_value=None):
+            login(headless=True, code=pasted)
+
+        flow.fetch_token.assert_called_once_with(code="4/0Axyz")
+
+
 class TestLogout:
     @pytest.mark.usefixtures("_patch_config")
     def test_deletes_existing_token(self, token_path: Path) -> None:
@@ -610,7 +673,9 @@ class TestCLICommands:
 
         assert result.exit_code == 0
         assert "Authenticated" in result.output
-        mock_login.assert_called_once_with(headless=False, config=auth_config, redirect_uri=None)
+        mock_login.assert_called_once_with(
+            headless=False, config=auth_config, redirect_uri=None, url_only=False, code=None
+        )
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.login")
@@ -626,7 +691,9 @@ class TestCLICommands:
         result = runner.invoke(auth_group, ["login", "--headless"], obj={"config": auth_config})
 
         assert result.exit_code == 0
-        mock_login.assert_called_once_with(headless=True, config=auth_config, redirect_uri=None)
+        mock_login.assert_called_once_with(
+            headless=True, config=auth_config, redirect_uri=None, url_only=False, code=None
+        )
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.login")
@@ -647,7 +714,11 @@ class TestCLICommands:
 
         assert result.exit_code == 0
         mock_login.assert_called_once_with(
-            headless=True, config=auth_config, redirect_uri="http://127.0.0.1:9000"
+            headless=True,
+            config=auth_config,
+            redirect_uri="http://127.0.0.1:9000",
+            url_only=False,
+            code=None,
         )
 
     @pytest.mark.usefixtures("_patch_config")

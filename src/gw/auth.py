@@ -312,7 +312,18 @@ def login(
     headless: bool = False,
     config: GWConfig | None = None,
     redirect_uri: str | None = None,
-) -> Credentials:
+    url_only: bool = False,
+    code: str | None = None,
+) -> Credentials | None:
+    """Authorize, or hand out the URL to authorize somewhere else.
+
+    ``--headless`` used to be interactive by construction: it printed the URL and then waited
+    on a prompt for the code. If that prompt died (a closed terminal, a backgrounded process,
+    an agent whose session expired) the approval already granted in the browser could not be
+    redeemed any more. ``url_only`` prints the URL and returns; ``code`` takes the pasted
+    redirect URL or bare code and does the exchange in a separate invocation, so the two
+    halves can happen in different places — or in a chat.
+    """
     target_scopes = scopes or DEFAULT_SCOPES
     cfg = config or _get_config()
     secrets = client_secrets or cfg.credentials
@@ -339,12 +350,22 @@ def login(
         # Instructions go to stderr so stdout stays a clean, pipeable URL.
         click.echo("Open this URL in any browser and approve access:", err=True)
         click.echo(auth_url)
+        if url_only:
+            click.echo(
+                "Then run: gw auth login --headless --code '<redirect URL or code>'",
+                err=True,
+            )
+            return None
         click.echo(
             f"The browser will land on {flow.redirect_uri}/?code=... and show a connection "
             "error. That is expected — copy that URL from the address bar.",
             err=True,
         )
-        pasted = click.prompt("Paste the full redirect URL (or just the code)", type=str)
+        pasted = (
+            code
+            if code is not None
+            else click.prompt("Paste the full redirect URL (or just the code)", type=str)
+        )
         flow.fetch_token(code=_extract_auth_code(pasted))
         creds = cast(Credentials, flow.credentials)
     else:
@@ -436,13 +457,37 @@ def register_auth_commands(auth_group: click.Group) -> None:
         default=None,
         help=f"Loopback redirect URI for --headless. Defaults to {HEADLESS_REDIRECT_URI}.",
     )
+    @click.option(
+        "--url-only",
+        is_flag=True,
+        help="Print the consent URL and exit, without waiting for a code.",
+    )
+    @click.option(
+        "--code",
+        default=None,
+        help="Redeem a pasted redirect URL (or bare code) instead of prompting for it.",
+    )
     @json_option
     @click.pass_context
     def login_cmd(
-        ctx: click.Context, headless: bool, redirect_uri: str | None, json_output: bool | None
+        ctx: click.Context,
+        headless: bool,
+        redirect_uri: str | None,
+        url_only: bool,
+        code: str | None,
+        json_output: bool | None,
     ) -> None:
         config = cast(GWConfig, ctx.obj["config"])
-        creds = login(headless=headless, config=config, redirect_uri=redirect_uri)
+        creds = login(
+            headless=headless,
+            config=config,
+            redirect_uri=redirect_uri,
+            url_only=url_only,
+            code=code,
+        )
+        if creds is None:
+            # --url-only: the URL already went to stdout; nothing was authorized yet.
+            return
         status = credential_status(creds, config=config)
         status["headless"] = headless
         if use_json_output(ctx, json_output):

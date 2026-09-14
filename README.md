@@ -218,6 +218,8 @@ gw gmail read 18c0ffee
 gw gmail send "alice@example.com" "Subject" "Hello"
 gw gmail send "alice@example.com" "Subject" "Hello" --no-signature
 gw gmail signature --json
+gw auth login --headless --url-only
+gw auth login --headless --code 'http://localhost/?code=...'
 gw gmail draft "alice@example.com" "Draft subject" "Hello later"
 gw gmail trash 18c0ffee
 gw gmail archive 18c0ffee

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.8.3 (2026-09-14)
+
+### Added
+- **`gw auth login` deixou de ser interactivo por construção.** `--headless` imprimia o URL e
+  ficava à espera de um prompt para o código; se esse prompt morresse (terminal fechado,
+  processo em background, sessão de agente expirada) a autorização já dada no browser ficava
+  impossível de trocar. Agora:
+  - `gw auth login --headless --url-only` imprime o URL e sai
+  - `gw auth login --headless --code '<redirect URL ou código>'` faz a troca, sem prompt
+
+  As duas metades podem acontecer em sítios diferentes — ou num chat. Foi exactamente o que
+  faltou hoje, duas vezes, ao conceder o scope `gmail.settings.basic` a três perfis.
+
 ## v0.8.2 (2026-09-14)
 
 ### Fixed

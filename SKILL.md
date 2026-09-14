@@ -36,6 +36,17 @@ gw auth setup           # Interactive setup wizard (config.toml)
 `--headless` uses a loopback `redirect_uri` (`http://localhost`, override with
 `--redirect-uri`). Paste the **whole** redirect URL back, not just the code.
 
+**Sem prompt, para scripting e agentes** (`--url-only` + `--code`, gw ≥ 0.8.3):
+
+```bash
+gw auth login --headless --url-only          # prints the URL and exits — nothing authorized
+gw auth login --headless --code 'http://localhost/?code=...'   # redeems it, no prompt
+```
+
+As duas metades podem acontecer em sítios diferentes: o URL numa máquina, o código noutra —
+que é o que permite aprovar um consentimento por chat. Sem estas flags, um prompt que morre
+leva a autorização consigo.
+
 ---
 
 ## Gmail Commands

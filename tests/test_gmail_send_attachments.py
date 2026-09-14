@@ -507,10 +507,14 @@ def test_cli_send_body_file_makes_body_optional(mock_build_service: MagicMock, t
     body_file = tmp_path / "body.txt"
     body_file.write_text("corpo do ficheiro", encoding="utf-8")
 
-    result = runner.invoke(
-        main,
-        ["gmail", "send", "a@example.com", "S", "--body-file", str(body_file), "--json"],
-    )
+    # This test is about --body-file, not signatures: the profile it runs against is the real
+    # one, and if that account has a signature the body becomes multipart/alternative and the
+    # single-part assertion below would be asserting the wrong thing.
+    with patch("gw.services.gmail.resolve_signature", return_value=None):
+        result = runner.invoke(
+            main,
+            ["gmail", "send", "a@example.com", "S", "--body-file", str(body_file), "--json"],
+        )
 
     assert result.exit_code == 0, result.output
     assert _sent_message(service).get_payload(decode=True).decode("utf-8") == "corpo do ficheiro"
