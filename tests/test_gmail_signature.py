@@ -514,7 +514,6 @@ def test_granted_scopes_reads_the_token_file(tmp_path: Path) -> None:
     assert granted_scopes(config) == []
     Path(config.token_path).unlink()
     assert granted_scopes(config) == []
-    assert granted_scopes(None) == []
 
 
 def test_has_settings_scope_uses_the_granted_scopes(tmp_path: Path) -> None:

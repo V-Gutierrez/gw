@@ -277,6 +277,27 @@ def _extract_auth_code(pasted: str) -> str:
     return code
 
 
+def granted_scopes(config: GWConfig | None = None, token_path: Path | None = None) -> list[str]:
+    """The scopes this token actually carries — what the consent screen recorded.
+
+    Read from the token file, never from a loaded ``Credentials`` object: loading fills in
+    the scopes gw *asks* for, so a token issued before a scope existed would look like it
+    already had it, and `gw auth login` would hand it back unchanged, granting nothing.
+    """
+    cfg = config or _get_config()
+    path = token_path or cfg.token
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    scopes = data.get("scopes")
+    return (
+        [scope for scope in scopes if isinstance(scope, str)] if isinstance(scopes, list) else []
+    )
+
+
 def login(
     scopes: list[str] | None = None,
     client_secrets: Path | None = None,
@@ -294,8 +315,15 @@ def login(
         raise GwConfigError(f"Credentials file not found: {secrets}")
 
     existing = load_credentials(target_scopes, resolved_token, config=cfg)
-    if existing and existing.valid:
+    missing = [
+        scope for scope in target_scopes if scope not in granted_scopes(cfg, resolved_token)
+    ]
+    if existing and existing.valid and not missing:
         return existing
+    if existing and existing.valid:
+        # A valid token that simply predates these scopes: re-consent, and say why, so it
+        # does not look like a login out of nowhere.
+        print_warning(f"Re-consent for {len(missing)} new scope(s): {', '.join(missing)}")
 
     flow = InstalledAppFlow.from_client_secrets_file(str(secrets), target_scopes)
     if headless:

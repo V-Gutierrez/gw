@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 
-from gw.auth import GMAIL_SETTINGS_SCOPE, build_service, execute_google_request
+from gw.auth import GMAIL_SETTINGS_SCOPE, build_service, execute_google_request, granted_scopes
 from gw.config import DEFAULT_SIGNATURE_CACHE_TTL_SECONDS, GWConfig, get_config_dir
 from gw.errors import GwAuthError, GwError
 from gw.utils import atomic_write
@@ -258,31 +258,13 @@ def strip_signature(body: str, signature: AccountSignature | None) -> str:
     return trimmed[: -len(marker)].rstrip()
 
 
-def granted_scopes(config: GWConfig | None) -> list[str]:
-    """The scopes this token actually carries — what `gw auth login` recorded.
-
-    Read straight from the token file, never from a loaded ``Credentials`` object: loading
-    fills in the scopes gw *asks* for, so a token issued before a scope existed would look
-    like it already had it — and the 403 would only show up at the API.
-    """
-    if config is None:
-        return []
-    try:
-        data = json.loads(config.token.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    if not isinstance(data, dict):
-        return []
-    scopes = data.get("scopes")
-    return (
-        [scope for scope in scopes if isinstance(scope, str)] if isinstance(scopes, list) else []
-    )
-
-
 def has_settings_scope(config: GWConfig | None, scopes: list[str] | None = None) -> bool:
     """Whether the current token was granted permission to write Gmail settings."""
-    granted = granted_scopes(config) if scopes is None else scopes
-    return GMAIL_SETTINGS_SCOPE in granted
+    if scopes is None:
+        if config is None:
+            return False
+        scopes = granted_scopes(config)
+    return GMAIL_SETTINGS_SCOPE in scopes
 
 
 def _target_address(service: object, address: str | None = None) -> str:

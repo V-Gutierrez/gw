@@ -17,6 +17,7 @@ from gw.auth import (
     HEADLESS_REDIRECT_URI,
     build_service,
     execute_google_request,
+    granted_scopes,
     load_credentials,
     login,
     logout,
@@ -716,3 +717,51 @@ class TestCLICommands:
         assert result.exit_code == 0
         assert json.loads(result.output)["authenticated"] is True
         mock_setup.assert_called_once_with(login_headless=True, config=auth_config)
+
+
+class TestScopeDrift:
+    """A token must never look like it carries a scope it was never granted.
+
+    `load_credentials` fills the requested scopes into the Credentials object, so anything
+    that reads scopes from there — the login short-circuit included — believes a new scope
+    is already granted. The token file is the only honest source.
+    """
+
+    @pytest.mark.usefixtures("_patch_config")
+    def test_granted_scopes_reads_the_token_file(self, token_path: Path) -> None:
+        _write_token(token_path, {**FAKE_TOKEN_DATA, "scopes": ["openid"]})
+
+        assert granted_scopes() == ["openid"]
+
+    @pytest.mark.usefixtures("_patch_config")
+    def test_granted_scopes_is_empty_without_a_token(self) -> None:
+        assert granted_scopes() == []
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_login_reconsents_when_a_requested_scope_is_missing(
+        self, mock_flow_cls: MagicMock, token_path: Path
+    ) -> None:
+        _write_token(token_path, {**FAKE_TOKEN_DATA, "scopes": ["openid"]})
+        fresh = _make_creds()
+        mock_flow_cls.from_client_secrets_file.return_value.run_local_server.return_value = fresh
+
+        with patch("gw.auth.load_credentials", return_value=_make_creds(valid=True)):
+            result = login(token_path=token_path)
+
+        assert result is fresh
+        mock_flow_cls.from_client_secrets_file.assert_called_once()
+        assert mock_flow_cls.from_client_secrets_file.call_args.args[1] == DEFAULT_SCOPES
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_login_keeps_a_token_that_already_covers_every_scope(
+        self, mock_flow_cls: MagicMock, token_path: Path
+    ) -> None:
+        _write_token(token_path)
+        existing = _make_creds(valid=True)
+
+        with patch("gw.auth.load_credentials", return_value=existing):
+            assert login(token_path=token_path) is existing
+
+        mock_flow_cls.from_client_secrets_file.assert_not_called()
