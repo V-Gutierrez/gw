@@ -23,11 +23,14 @@ The signature you configured in Gmail now goes out with your mail.
   last time is dropped before the rebuild
 - New `gw gmail signature [--refresh] [--json]` reports what would be attached,
   without sending anything
-- `gw gmail signature --set FILE` writes the signature **into Gmail** (and `--clear`
-  removes it), so the CLI, the web interface and every other client agree. Gmail stays
-  the single source; the local cache is refreshed at write time. Writing needs the
-  `gmail.settings.basic` scope, new in `DEFAULT_SCOPES` — additive, so existing tokens
-  keep sending and only need one `gw auth login` before the first write
+- `gw gmail signature --set FILE` writes the signature **into Gmail** — creating it or
+  replacing what is there — and `--set -` reads it from stdin, so a script or an agent
+  can pipe it. `--edit` opens the current signature in `$EDITOR` and writes the result
+  back (an account with none opens an empty buffer, so creating and editing are the same
+  command), and `--clear` removes it. Gmail stays the single source; the local cache is
+  refreshed at write time, and saving an untouched buffer writes nothing. Writing needs
+  the `gmail.settings.basic` scope, new in `DEFAULT_SCOPES` — additive, so existing
+  tokens keep sending and only need one `gw auth login` before the first write
 - The MIME is built the same way in the MCP server, so drafts created from an agent
   carry the same signature
 

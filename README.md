@@ -160,11 +160,17 @@ an account with no signature configured keeps sending the plain message it alway
 gw gmail signature                 # what the next message will carry
 gw gmail signature --refresh       # ignore the cache and read Gmail again
 gw gmail signature --json
-gw gmail signature --set signature.html   # write it into Gmail (the web UI shows it too)
+gw gmail signature --set signature.html   # create or replace it in Gmail
+gw gmail signature --set - < signature.html   # ...or pipe it in
+gw gmail signature --edit                 # edit the current one in $EDITOR
 gw gmail signature --clear                # remove the signature from Gmail
 gw gmail send "to@example.com" "Subject" "Body" --no-signature   # this one time only
 gw --profile personal gmail send "to@example.com" "Subject" "Body"
 ```
+
+Writing goes to Gmail's own settings, so the web interface shows the same signature gw
+attaches. `--set` creates it when there is none and replaces it when there is; `--edit`
+pulls the current one into `$EDITOR`, and leaving the buffer untouched writes nothing.
 
 `--signature / --no-signature` is available on every sending command and beats the config
 for that single message.

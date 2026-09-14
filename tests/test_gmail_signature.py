@@ -574,17 +574,101 @@ def test_cli_signature_set_writes_the_file(tmp_path: Path) -> None:
         result = runner.invoke(main, ["gmail", "signature", "--set", str(html_file)], env=env)
 
     assert result.exit_code == 0, result.output
-    assert "Signature updated" in result.output
+    assert "Signature saved" in result.output
+    assert _send_as_update_route(service).call_args.kwargs["body"] == {"signature": NEW_HTML}
 
 
-def test_cli_signature_set_and_clear_together_is_an_error(tmp_path: Path) -> None:
+def test_cli_signature_set_reads_stdin(tmp_path: Path) -> None:
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+    service = _service()
+    _send_as_update_route(service).return_value.execute.return_value = {"signature": NEW_HTML}
+
+    with (
+        patch("gw.signature.build_service", return_value=service),
+        patch("gw.signature.granted_scopes", return_value=[GMAIL_SETTINGS_SCOPE]),
+    ):
+        result = runner.invoke(main, ["gmail", "signature", "--set", "-"], input=NEW_HTML, env=env)
+
+    assert result.exit_code == 0, result.output
+    assert _send_as_update_route(service).call_args.kwargs["body"] == {"signature": NEW_HTML}
+
+
+def test_cli_signature_set_with_a_missing_file_is_an_error(tmp_path: Path) -> None:
+    result = runner.invoke(main, ["gmail", "signature", "--set", str(tmp_path / "nope.html")])
+
+    assert result.exit_code != 0
+    assert "Signature file not found" in result.output
+
+
+def test_cli_signature_edit_writes_what_the_editor_returned(tmp_path: Path) -> None:
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+    service = _service()
+    _send_as_update_route(service).return_value.execute.return_value = {"signature": NEW_HTML}
+
+    with (
+        patch("gw.signature.build_service", return_value=service),
+        patch("gw.signature.granted_scopes", return_value=[GMAIL_SETTINGS_SCOPE]),
+        patch("gw.services.gmail._stdin_is_interactive", return_value=True),
+        patch("gw.services.gmail.click.edit", return_value=f"  {NEW_HTML}\n"),
+    ):
+        result = runner.invoke(main, ["gmail", "signature", "--edit"], env=env)
+
+    assert result.exit_code == 0, result.output
+    assert _send_as_update_route(service).call_args.kwargs["body"] == {"signature": NEW_HTML}
+
+
+def test_cli_signature_edit_without_changes_writes_nothing(tmp_path: Path) -> None:
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+    service = _service()
+
+    with (
+        patch("gw.signature.build_service", return_value=service),
+        patch("gw.signature.granted_scopes", return_value=[GMAIL_SETTINGS_SCOPE]),
+        patch("gw.services.gmail._stdin_is_interactive", return_value=True),
+        patch("gw.services.gmail.click.edit", return_value=None),
+    ):
+        result = runner.invoke(main, ["gmail", "signature", "--edit"], env=env)
+
+    assert result.exit_code != 0
+    assert "Nothing changed" in result.output
+    assert _send_as_update_route(service).call_count == 0
+
+
+def test_cli_signature_edit_emptied_by_the_user_points_at_clear(tmp_path: Path) -> None:
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+
+    with (
+        patch("gw.signature.build_service", return_value=_service()),
+        patch("gw.signature.granted_scopes", return_value=[GMAIL_SETTINGS_SCOPE]),
+        patch("gw.services.gmail._stdin_is_interactive", return_value=True),
+        patch("gw.services.gmail.click.edit", return_value="   \n"),
+    ):
+        result = runner.invoke(main, ["gmail", "signature", "--edit"], env=env)
+
+    assert result.exit_code != 0
+    assert "--clear" in result.output
+
+
+def test_cli_signature_edit_needs_a_terminal(tmp_path: Path) -> None:
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+    with (
+        patch("gw.signature.build_service", return_value=_service()),
+        patch("gw.signature.granted_scopes", return_value=[GMAIL_SETTINGS_SCOPE]),
+    ):
+        result = runner.invoke(main, ["gmail", "signature", "--edit"], env=env)
+
+    assert result.exit_code != 0
+    assert "interactive terminal" in result.output
+
+
+def test_cli_signature_write_modes_are_exclusive(tmp_path: Path) -> None:
     html_file = tmp_path / "x.html"
     html_file.write_text("<div>x</div>", encoding="utf-8")
 
     result = runner.invoke(main, ["gmail", "signature", "--set", str(html_file), "--clear"])
 
     assert result.exit_code != 0
-    assert "not both" in result.output
+    assert "only one of" in result.output
 
 
 def test_cli_no_signature_flag_exists_on_every_sending_command() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import sys
 from collections.abc import Callable, Sequence
 from email import encoders, message_from_bytes
 from email.message import Message
@@ -9,7 +10,7 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import click
 
@@ -49,6 +50,55 @@ def _signature_option(function: Callable[..., Any]) -> Callable[..., Any]:
         default=None,
         help="Attach the account signature. Defaults to the signature config setting.",
     )(function)
+
+
+def _read_signature_source(source: str) -> str:
+    """The HTML to install: a path, or ``-`` for stdin."""
+    if source == "-":
+        return sys.stdin.read()
+    path = Path(source).expanduser()
+    if not path.is_file():
+        raise click.ClickException(f"Signature file not found: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def _stdin_is_interactive() -> bool:
+    """Whether there is a terminal to open an editor in (--edit needs one)."""
+    return sys.stdin.isatty()
+
+
+def _edit_signature(config: GWConfig | None, address: str | None = None) -> str:
+    """Open the signature this account already has in $EDITOR, and return the result.
+
+    An account with nothing configured opens an empty buffer, so the same command
+    creates and edits. Saving without touching anything is not a write.
+    """
+    if not _stdin_is_interactive():
+        raise click.ClickException(
+            "--edit needs an interactive terminal. Use --set FILE, or --set - to pipe it."
+        )
+
+    current = resolve_signature(config, override=True)
+    edited = click.edit(current.html if current else "", require_save=True, extension=".html")
+    if edited is None:
+        raise click.ClickException("Nothing changed — the signature in Gmail was left alone.")
+    if not edited.strip():
+        raise click.ClickException("Empty signature — use --clear to remove it instead.")
+    return edited.strip()
+
+
+def _render_signature_write(
+    written: AccountSignature, *, cleared: bool, json_output: bool
+) -> None:
+    if json_output:
+        print_json({"email": written.email, "chars": len(written.html), "cleared": cleared})
+    elif cleared:
+        print_success(f"Signature cleared for {written.email}.")
+    else:
+        print_success(
+            f"Signature saved for {written.email} ({len(written.html)} chars). "
+            "The next send carries it."
+        )
 
 
 def _render_signature(config: GWConfig | None, override: bool | None) -> None:
@@ -1349,9 +1399,9 @@ def register_gmail_commands(group: click.Group) -> None:
         "--set",
         "set_file",
         default=None,
-        type=click.Path(exists=True, dir_okay=False),
-        help="Write the signature from this HTML file into Gmail.",
+        help="Write the signature from an HTML file into Gmail, or '-' to read stdin.",
     )
+    @click.option("--edit", is_flag=True, help="Edit the current signature in $EDITOR.")
     @click.option("--clear", is_flag=True, help="Remove the signature configured in Gmail.")
     @click.option("--address", default=None, help="Sending identity to read or write.")
     @click.option("--refresh", is_flag=True, help="Ignore the cache and read Gmail again.")
@@ -1360,35 +1410,37 @@ def register_gmail_commands(group: click.Group) -> None:
     def signature_command(
         ctx: click.Context,
         set_file: str | None,
+        edit: bool,
         clear: bool,
         address: str | None,
         refresh: bool,
         json_output: bool | None,
     ) -> None:
-        """Show — or write — the account signature gw attaches to outgoing mail.
+        """Show, create or edit the signature gw attaches to outgoing mail.
 
-        Read from Gmail's own settings (``settings.sendAs``) and cached for a week.
+        Reading comes from Gmail's own settings (``settings.sendAs``), cached for a week.
 
-        --set and --clear write to Gmail itself, so the signature is the same one the
-        web interface shows. That needs the gmail.settings.basic scope: run
+        Writing goes to Gmail itself, so the signature is the same one the web interface
+        shows: ``--set FILE`` creates or replaces it, ``--edit`` opens the current one in
+        $EDITOR, ``--clear`` removes it. That needs the gmail.settings.basic scope: run
         `gw auth login` once after upgrading if the token predates it.
         """
         config = ctx.obj["config"]
-        if set_file is not None and clear:
-            raise click.ClickException("Pass either --set FILE or --clear, not both.")
+        chosen = sum([set_file is not None, edit, clear])
+        if chosen > 1:
+            raise click.ClickException("Pass only one of --set FILE, --edit or --clear.")
 
-        if set_file is not None or clear:
-            markup = "" if clear else Path(set_file).read_text(encoding="utf-8")
-            written = set_account_signature(config, markup, address=address)
-            if use_json_output(ctx, json_output):
-                print_json({"email": written.email, "chars": len(written.html), "cleared": clear})
-            elif clear:
-                print_success(f"Signature cleared for {written.email}.")
+        if chosen == 1:
+            if clear:
+                markup = ""
+            elif edit:
+                markup = _edit_signature(config, address)
             else:
-                print_success(
-                    f"Signature updated for {written.email} ({len(written.html)} chars). "
-                    "The next send carries it."
-                )
+                markup = _read_signature_source(cast(str, set_file))
+            written = set_account_signature(config, markup, address=address)
+            _render_signature_write(
+                written, cleared=clear, json_output=use_json_output(ctx, json_output)
+            )
             return
 
         data = get_account_signature(config, refresh=refresh)

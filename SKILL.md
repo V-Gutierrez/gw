@@ -97,7 +97,9 @@ gw reads it from `users.settings.sendAs`, caches it for a week and appends it:
 ```bash
 gw gmail signature                   # show what the next message will carry
 gw gmail signature --refresh         # bypass the cache and re-read Gmail
-gw gmail signature --set assinatura.html  # write it into Gmail
+gw gmail signature --set assinatura.html  # create or replace it in Gmail
+gw gmail signature --set - < assinatura.html   # ...or pipe it in
+gw gmail signature --edit                 # edit the current one in $EDITOR
 gw gmail signature --clear                # remove the signature from Gmail
 gw gmail send "to@example.com" "Subject" "Body" --no-signature   # skip it once
 gw gmail reply <message_id> "Sem assinatura" --no-signature
@@ -105,8 +107,10 @@ gw gmail reply <message_id> "Sem assinatura" --no-signature
 
 - `--signature / --no-signature` exists on `send`, `draft`, `draft-edit`, `reply` and
   `forward`, and beats the config for that one message
-- `--set` / `--clear` write to Gmail's own settings, so the web interface shows the same
-  thing. `--address` picks which sending identity when the account has aliases
+- `--set` / `--edit` / `--clear` write to Gmail's own settings, so the web interface shows
+  the same thing. `--set` creates when there is none and replaces when there is; `--edit`
+  opens the current signature in `$EDITOR` and writes back only if you changed it.
+  `--address` picks which sending identity when the account has aliases
 - Config: `signature = false` disables it for a profile, `signature_address` picks among
   aliases, `signature_cache_path` / `signature_cache_ttl_seconds` tune the cache
 - An account with no signature configured is unaffected: the message stays a plain
