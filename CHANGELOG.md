@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.8.2 (2026-09-14)
+
+### Fixed
+- **Adding a scope to the defaults broke every token that had to refresh.** `load_credentials`
+  loaded the token *with* the scopes gw asks for, and google-auth sends that list when it
+  refreshes — so a token granted before `gmail.settings.basic` existed got
+  `invalid_scope` on refresh, `load_credentials` turned that into `None`, and every command
+  answered "Not authenticated". Reproduced live on the personal profile minutes after 0.8.1:
+  the only way back was a fresh login, per profile. The loader now hands google-auth the
+  token path and nothing else — the scopes recorded in the token file are the only honest
+  set, and the parameter stays only for caller compatibility.
+- Covered by two tests that would have caught it: the loader never forwards requested
+  scopes, and a token whose scopes predate the defaults still refreshes.
+
 ## v0.8.1 (2026-09-14)
 
 ### Fixed
