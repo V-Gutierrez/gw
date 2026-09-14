@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.8.1 (2026-09-14)
+
+### Fixed
+- **`gw auth login` granted nothing when a scope had been added to the defaults.** The
+  command printed "Authenticated" and returned the same token, so the
+  `gmail.settings.basic` scope from 0.8.0 could never actually be granted and
+  `gw gmail signature --set` stayed at a 403. Cause: the login short-circuit read the
+  scopes off a loaded `Credentials` object, which carries the scopes gw *asks* for rather
+  than the ones consented to. `granted_scopes()` now reads the token file — the honest
+  source — and `login` only reuses a token that really covers what it asks for,
+  re-consenting (and naming the new scopes) when it does not. Upgrading 0.8.0 → 0.8.1 and
+  running `gw auth login` once per profile is what actually grants the scope.
+
 ## v0.8.0 (2026-09-14)
 
 The signature you configured in Gmail now goes out with your mail.
