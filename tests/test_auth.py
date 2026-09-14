@@ -117,6 +117,24 @@ class TestSaveCredentials:
 
 class TestLoadCredentials:
     @pytest.mark.usefixtures("_patch_config")
+    def test_does_not_ask_for_scopes_the_token_never_had(self, token_path: Path) -> None:
+        """A token that predates a scope must still refresh.
+
+        google-auth sends the credential object's scopes on a refresh, so loading with the
+        scopes gw asks for makes Google answer `invalid_scope` — the token then stops
+        refreshing and every command reports "Not authenticated". Only the path may be
+        handed to the loader; the token file already knows its own scopes.
+        """
+        _write_token(token_path, {**FAKE_TOKEN_DATA, "scopes": ["openid"]})
+        creds = _make_creds(valid=True)
+
+        with patch("gw.auth.Credentials.from_authorized_user_file", return_value=creds) as loader:
+            result = load_credentials(DEFAULT_SCOPES, token_path=token_path)
+
+        assert result is creds
+        assert loader.call_args.args == (str(token_path),)
+
+    @pytest.mark.usefixtures("_patch_config")
     def test_returns_none_when_no_file(self, token_path: Path) -> None:
         assert load_credentials(token_path=token_path) is None
 
@@ -130,7 +148,7 @@ class TestLoadCredentials:
         result = load_credentials(token_path=token_path)
 
         assert result is mock_creds
-        mock_from_file.assert_called_once_with(str(token_path), DEFAULT_SCOPES)
+        mock_from_file.assert_called_once_with(str(token_path))
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.Request")

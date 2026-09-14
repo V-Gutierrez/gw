@@ -233,15 +233,22 @@ def load_credentials(
     token_path: Path | None = None,
     config: GWConfig | None = None,
 ) -> Credentials | None:
+    """Load the stored token, refreshing it if it expired.
+
+    ``scopes`` is deliberately **not** handed to the credential object: google-auth sends
+    the object's scopes on a refresh, so loading a token with a scope it was never granted
+    makes Google answer ``invalid_scope`` and the token stops refreshing altogether. The
+    scopes recorded in the token file are the only honest set — the parameter stays for
+    caller compatibility, and is ignored on purpose.
+    """
     active_config = config or _get_config()
     resolved = token_path or active_config.token
-    target_scopes = scopes or DEFAULT_SCOPES
 
     if not resolved.exists():
         return None
 
     try:
-        creds = Credentials.from_authorized_user_file(str(resolved), target_scopes)
+        creds = Credentials.from_authorized_user_file(str(resolved))
     except (json.JSONDecodeError, ValueError, KeyError):
         return None
 
@@ -314,7 +321,7 @@ def login(
     if not secrets.exists():
         raise GwConfigError(f"Credentials file not found: {secrets}")
 
-    existing = load_credentials(target_scopes, resolved_token, config=cfg)
+    existing = load_credentials(token_path=resolved_token, config=cfg)
     missing = [
         scope for scope in target_scopes if scope not in granted_scopes(cfg, resolved_token)
     ]
