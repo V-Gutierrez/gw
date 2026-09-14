@@ -3,8 +3,8 @@ class Gw < Formula
 
   desc "Google Workspace CLI - Gmail, Calendar, Drive, Sheets, Docs from your terminal"
   homepage "https://github.com/v-gutierrez/gw"
-  url "https://github.com/v-gutierrez/gw/archive/refs/tags/v0.7.0.tar.gz"
-  sha256 "5dd05d8bd13cd41e4a24322bc95be9c718089c843da874ca5f7f83a99cafe77d"
+  url "https://github.com/v-gutierrez/gw/archive/refs/tags/v0.8.0.tar.gz"
+  sha256 "8495d0c1be2fb9dbf64dfee0ac88d677a99c4874f05f0b65196162e5f8458ddd"
   license "MIT"
 
   depends_on "openssl@3"
@@ -266,6 +266,6 @@ class Gw < Formula
   end
 
   test do
-    assert_match "0.5.2", shell_output("#{bin}/gw --version")
+    assert_match "0.8.0", shell_output("#{bin}/gw --version")
   end
 end
