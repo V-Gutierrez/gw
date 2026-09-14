@@ -19,8 +19,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+from gw.auth import GMAIL_SETTINGS_SCOPE
 from gw.cli import main
 from gw.config import GWConfig, load_config
+from gw.errors import GwAuthError
 from gw.services.gmail import (
     create_gmail_draft,
     forward_gmail_message,
@@ -31,9 +33,12 @@ from gw.services.gmail import (
 from gw.signature import (
     AccountSignature,
     append_signature,
+    granted_scopes,
+    has_settings_scope,
     html_to_text,
     pick_send_as,
     resolve_signature,
+    set_account_signature,
     signature_cache_path,
     signature_enabled,
     strip_signature,
@@ -78,6 +83,12 @@ def _send_as_route(service: MagicMock) -> MagicMock:
     """
     users = service.users.return_value
     return users.settings.return_value.sendAs.return_value.list
+
+
+def _send_as_update_route(service: MagicMock) -> MagicMock:
+    """The ``settings.sendAs.update`` resource, where a written signature lands."""
+    users = service.users.return_value
+    return users.settings.return_value.sendAs.return_value.update
 
 
 def _service(html: str = SIG_HTML, email: str = "victor@example.com") -> MagicMock:
@@ -425,6 +436,98 @@ def test_get_account_signature_ignores_the_config_switch(tmp_path: Path) -> None
     assert signature.html == SIG_HTML
 
 
+# ---------------- writing the signature back into Gmail ----------------
+
+NEW_HTML = '<div dir="ltr"><div><br>Abraço,</div><div><b>Consi</b></div></div>'
+
+
+def test_set_signature_writes_to_gmail_and_refreshes_the_cache(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    service = _service()
+    _send_as_update_route(service).return_value.execute.return_value = {"signature": NEW_HTML}
+
+    with patch("gw.signature.granted_scopes", return_value=[GMAIL_SETTINGS_SCOPE]):
+        written = set_account_signature(config, NEW_HTML, service=service)
+
+    assert _send_as_update_route(service).call_args.kwargs == {
+        "userId": "me",
+        "sendAsEmail": "victor@example.com",
+        "body": {"signature": NEW_HTML},
+    }
+    assert written.email == "victor@example.com"
+    assert json.loads(signature_cache_path(config).read_text())["signature"] == NEW_HTML
+
+    # The next send uses the new signature from the cache, without asking the API.
+    refreshed = resolve_signature(config, service=_service())
+    assert refreshed is not None
+    assert refreshed.html == NEW_HTML
+
+
+def test_set_signature_refuses_without_the_scope(tmp_path: Path) -> None:
+    service = _service()
+
+    with (
+        patch("gw.signature.granted_scopes", return_value=["gmail.modify"]),
+        pytest.raises(GwAuthError, match="gmail.settings.basic"),
+    ):
+        set_account_signature(_config(tmp_path), NEW_HTML, service=service)
+
+    assert _send_as_update_route(service).call_count == 0
+
+
+def test_set_signature_targets_the_configured_address_without_listing(tmp_path: Path) -> None:
+    config = _config(tmp_path, signature_address="alias@example.com")
+    service = _service()
+
+    with patch("gw.signature.granted_scopes", return_value=[GMAIL_SETTINGS_SCOPE]):
+        written = set_account_signature(config, NEW_HTML, service=service)
+
+    assert written.email == "alias@example.com"
+    assert _send_as_update_route(service).call_args.kwargs["sendAsEmail"] == "alias@example.com"
+    assert _send_as_route(service).call_count == 0
+
+
+def test_clear_signature_empties_gmail_and_the_cache(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    service = _service()
+
+    with patch("gw.signature.granted_scopes", return_value=[GMAIL_SETTINGS_SCOPE]):
+        cleared = set_account_signature(config, "", service=service)
+
+    assert cleared.html == ""
+    assert _send_as_update_route(service).call_args.kwargs["body"] == {"signature": ""}
+    assert json.loads(signature_cache_path(config).read_text())["signature"] == ""
+    # An empty signature is cached as empty: sends go out bare and stay that way.
+    assert resolve_signature(config, service=_service()) is None
+
+
+def test_granted_scopes_reads_the_token_file(tmp_path: Path) -> None:
+    config = _config(tmp_path, token_path=str(tmp_path / "token.json"))
+    Path(config.token_path).write_text(
+        json.dumps({"token": "x", "scopes": [GMAIL_SETTINGS_SCOPE, "openid"]}),
+        encoding="utf-8",
+    )
+
+    assert granted_scopes(config) == [GMAIL_SETTINGS_SCOPE, "openid"]
+
+    Path(config.token_path).write_text(json.dumps({"token": "x", "scopes": "openid"}))
+    assert granted_scopes(config) == []
+    Path(config.token_path).unlink()
+    assert granted_scopes(config) == []
+    assert granted_scopes(None) == []
+
+
+def test_has_settings_scope_uses_the_granted_scopes(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+
+    assert has_settings_scope(config, [GMAIL_SETTINGS_SCOPE]) is True
+    assert has_settings_scope(config, ["gmail.send"]) is False
+    # The scope joining DEFAULT_SCOPES must NOT make an old token look like it has it.
+    with patch("gw.signature.granted_scopes", return_value=["gmail.send"]):
+        assert has_settings_scope(config) is False
+    assert has_settings_scope(None) is False
+
+
 # ---------------- CLI ----------------
 
 
@@ -455,6 +558,33 @@ def test_cli_signature_human_output(tmp_path: Path) -> None:
 
     assert "victor@example.com" in result.output
     assert "Cumprimentos," in result.output
+
+
+def test_cli_signature_set_writes_the_file(tmp_path: Path) -> None:
+    html_file = tmp_path / "consi.html"
+    html_file.write_text(NEW_HTML, encoding="utf-8")
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+    service = _service()
+    _send_as_update_route(service).return_value.execute.return_value = {"signature": NEW_HTML}
+
+    with (
+        patch("gw.signature.build_service", return_value=service),
+        patch("gw.signature.granted_scopes", return_value=[GMAIL_SETTINGS_SCOPE]),
+    ):
+        result = runner.invoke(main, ["gmail", "signature", "--set", str(html_file)], env=env)
+
+    assert result.exit_code == 0, result.output
+    assert "Signature updated" in result.output
+
+
+def test_cli_signature_set_and_clear_together_is_an_error(tmp_path: Path) -> None:
+    html_file = tmp_path / "x.html"
+    html_file.write_text("<div>x</div>", encoding="utf-8")
+
+    result = runner.invoke(main, ["gmail", "signature", "--set", str(html_file), "--clear"])
+
+    assert result.exit_code != 0
+    assert "not both" in result.output
 
 
 def test_cli_no_signature_flag_exists_on_every_sending_command() -> None:

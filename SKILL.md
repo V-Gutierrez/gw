@@ -97,12 +97,16 @@ gw reads it from `users.settings.sendAs`, caches it for a week and appends it:
 ```bash
 gw gmail signature                   # show what the next message will carry
 gw gmail signature --refresh         # bypass the cache and re-read Gmail
+gw gmail signature --set assinatura.html  # write it into Gmail
+gw gmail signature --clear                # remove the signature from Gmail
 gw gmail send "to@example.com" "Subject" "Body" --no-signature   # skip it once
 gw gmail reply <message_id> "Sem assinatura" --no-signature
 ```
 
 - `--signature / --no-signature` exists on `send`, `draft`, `draft-edit`, `reply` and
   `forward`, and beats the config for that one message
+- `--set` / `--clear` write to Gmail's own settings, so the web interface shows the same
+  thing. `--address` picks which sending identity when the account has aliases
 - Config: `signature = false` disables it for a profile, `signature_address` picks among
   aliases, `signature_cache_path` / `signature_cache_ttl_seconds` tune the cache
 - An account with no signature configured is unaffected: the message stays a plain
@@ -110,6 +114,10 @@ gw gmail reply <message_id> "Sem assinatura" --no-signature
 - With a signature the body becomes `multipart/alternative` (HTML + plain text), wrapped
   in `multipart/mixed` when you also attach files
 - `draft-edit` re-applies the signature rather than stacking a second copy
+
+**Scope:** reading needs only the scopes gw already had; writing needs
+`gmail.settings.basic`, which joined `DEFAULT_SCOPES` in 0.8.0. A token issued before that
+needs one `gw auth login` (per profile) before the first `--set`.
 
 Notes:
 - Files are sent as raw binary with the MIME type resolved from the filename

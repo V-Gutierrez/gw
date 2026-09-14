@@ -23,8 +23,9 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 
-from gw.auth import build_service, execute_google_request
+from gw.auth import GMAIL_SETTINGS_SCOPE, build_service, execute_google_request
 from gw.config import DEFAULT_SIGNATURE_CACHE_TTL_SECONDS, GWConfig, get_config_dir
+from gw.errors import GwAuthError, GwError
 from gw.utils import atomic_write
 
 # Tags that end a rendered visual line, so their text version breaks there too.
@@ -255,3 +256,79 @@ def strip_signature(body: str, signature: AccountSignature | None) -> str:
     if not trimmed.endswith(marker):
         return body
     return trimmed[: -len(marker)].rstrip()
+
+
+def granted_scopes(config: GWConfig | None) -> list[str]:
+    """The scopes this token actually carries — what `gw auth login` recorded.
+
+    Read straight from the token file, never from a loaded ``Credentials`` object: loading
+    fills in the scopes gw *asks* for, so a token issued before a scope existed would look
+    like it already had it — and the 403 would only show up at the API.
+    """
+    if config is None:
+        return []
+    try:
+        data = json.loads(config.token.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    scopes = data.get("scopes")
+    return (
+        [scope for scope in scopes if isinstance(scope, str)] if isinstance(scopes, list) else []
+    )
+
+
+def has_settings_scope(config: GWConfig | None, scopes: list[str] | None = None) -> bool:
+    """Whether the current token was granted permission to write Gmail settings."""
+    granted = granted_scopes(config) if scopes is None else scopes
+    return GMAIL_SETTINGS_SCOPE in granted
+
+
+def _target_address(service: object, address: str | None = None) -> str:
+    """The sending identity to read or write: the one asked for, else the default."""
+    if address:
+        return address
+    response = execute_google_request(
+        service.users().settings().sendAs().list(userId="me")  # type: ignore[attr-defined]
+    )
+    entries = response.get("sendAs", []) if isinstance(response, dict) else []
+    chosen = pick_send_as(list(entries), None)
+    email = chosen.get("sendAsEmail") if chosen else None
+    if not isinstance(email, str) or not email:
+        raise GwError("No sending identity found for this account.")
+    return email
+
+
+def set_account_signature(
+    config: GWConfig | None,
+    markup: str,
+    *,
+    address: str | None = None,
+    service: object | None = None,
+) -> AccountSignature:
+    """Write the signature into Gmail itself, then refresh the local cache.
+
+    Gmail stays the single source: whatever is written here is what every other mail
+    client shows and what gw attaches on the next send. An empty ``markup`` clears it.
+    """
+    if config is None:
+        raise GwAuthError("Writing a signature needs a profile: pass --profile.")
+    if not has_settings_scope(config):
+        raise GwAuthError(
+            "Writing the signature needs the gmail.settings.basic scope, which this "
+            "token was not granted. Run `gw auth login` again to grant it."
+        )
+
+    resolved_service = service or build_service("gmail", "v1", config=config)
+    target = address or config.signature_address or _target_address(resolved_service)
+    execute_google_request(
+        resolved_service.users()
+        .settings()
+        .sendAs()
+        .update(userId="me", sendAsEmail=target, body={"signature": markup})
+    )
+
+    signature = AccountSignature(email=target, html=markup, source="api")
+    _write_cache(signature_cache_path(config), signature)
+    return signature

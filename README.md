@@ -160,12 +160,21 @@ an account with no signature configured keeps sending the plain message it alway
 gw gmail signature                 # what the next message will carry
 gw gmail signature --refresh       # ignore the cache and read Gmail again
 gw gmail signature --json
+gw gmail signature --set signature.html   # write it into Gmail (the web UI shows it too)
+gw gmail signature --clear                # remove the signature from Gmail
 gw gmail send "to@example.com" "Subject" "Body" --no-signature   # this one time only
 gw --profile personal gmail send "to@example.com" "Subject" "Body"
 ```
 
 `--signature / --no-signature` is available on every sending command and beats the config
 for that single message.
+
+Reading works with the scopes gw already asks for. Writing needs `gmail.settings.basic`,
+which is in the default set from 0.8.0 on — a token issued earlier only needs one re-login:
+
+```bash
+gw --profile work auth login
+```
 
 ## Usage
 

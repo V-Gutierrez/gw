@@ -28,10 +28,16 @@ from gw.output import (
 )
 from gw.utils import atomic_write
 
+# Reading the account signature works with gmail.modify; *writing* it (gw gmail
+# signature --set) needs this one. Additive: existing tokens keep working, they just
+# cannot write until their next `gw auth login`.
+GMAIL_SETTINGS_SCOPE = "https://www.googleapis.com/auth/gmail.settings.basic"
+
 DEFAULT_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
+    GMAIL_SETTINGS_SCOPE,
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/spreadsheets",

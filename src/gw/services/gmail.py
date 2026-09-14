@@ -21,6 +21,7 @@ from gw.signature import (
     append_signature,
     cached_signature,
     resolve_signature,
+    set_account_signature,
     signature_enabled,
     strip_signature,
 )
@@ -1344,15 +1345,52 @@ def register_gmail_commands(group: click.Group) -> None:
             _render_sent_attachments(data)
 
     @group.command("signature")
+    @click.option(
+        "--set",
+        "set_file",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Write the signature from this HTML file into Gmail.",
+    )
+    @click.option("--clear", is_flag=True, help="Remove the signature configured in Gmail.")
+    @click.option("--address", default=None, help="Sending identity to read or write.")
     @click.option("--refresh", is_flag=True, help="Ignore the cache and read Gmail again.")
     @json_option
     @click.pass_context
-    def signature_command(ctx: click.Context, refresh: bool, json_output: bool | None) -> None:
-        """Show the account signature gw attaches to outgoing mail.
+    def signature_command(
+        ctx: click.Context,
+        set_file: str | None,
+        clear: bool,
+        address: str | None,
+        refresh: bool,
+        json_output: bool | None,
+    ) -> None:
+        """Show — or write — the account signature gw attaches to outgoing mail.
 
         Read from Gmail's own settings (``settings.sendAs``) and cached for a week.
+
+        --set and --clear write to Gmail itself, so the signature is the same one the
+        web interface shows. That needs the gmail.settings.basic scope: run
+        `gw auth login` once after upgrading if the token predates it.
         """
         config = ctx.obj["config"]
+        if set_file is not None and clear:
+            raise click.ClickException("Pass either --set FILE or --clear, not both.")
+
+        if set_file is not None or clear:
+            markup = "" if clear else Path(set_file).read_text(encoding="utf-8")
+            written = set_account_signature(config, markup, address=address)
+            if use_json_output(ctx, json_output):
+                print_json({"email": written.email, "chars": len(written.html), "cleared": clear})
+            elif clear:
+                print_success(f"Signature cleared for {written.email}.")
+            else:
+                print_success(
+                    f"Signature updated for {written.email} ({len(written.html)} chars). "
+                    "The next send carries it."
+                )
+            return
+
         data = get_account_signature(config, refresh=refresh)
         if use_json_output(ctx, json_output):
             print_json(
