@@ -63,6 +63,19 @@ ADMIN_SCOPES = [
     "https://www.googleapis.com/auth/chrome.management.telemetry.readonly",
 ]
 
+# Administração com escrita. Cada um destes substitui o `.readonly` correspondente — o
+# Google trata o scope amplo como superconjunto, por isso pedir os dois é redundante, não
+# aditivo. Separados de propósito: `--admin` concede leitura, `--admin-write` concede as
+# duas, e a diferença entre as duas flags é a diferença entre um engano e uma decisão.
+ADMIN_WRITE_SCOPES = [
+    "https://www.googleapis.com/auth/admin.directory.user",
+    "https://www.googleapis.com/auth/admin.directory.group",
+    "https://www.googleapis.com/auth/admin.directory.orgunit",
+    "https://www.googleapis.com/auth/admin.directory.device.chromeos",
+    "https://www.googleapis.com/auth/admin.directory.device.mobile.action",
+    "https://www.googleapis.com/auth/chrome.management.telemetry.readonly",
+]
+
 
 RETRY_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
@@ -344,17 +357,21 @@ def login(
     # Precedence: explicit argument, then the profile's own list, then the built-in set.
     # The profile layer is what lets `gw --profile csadmin auth login` ask for Directory
     # API without touching the scopes of any other token.
-    target_scopes = scopes or getattr(cfg, "scopes", None) or DEFAULT_SCOPES
+    requested = scopes or getattr(cfg, "scopes", None) or DEFAULT_SCOPES
     secrets = client_secrets or cfg.credentials
     resolved_token = token_path or cfg.token
 
     if not secrets.exists():
         raise GwConfigError(f"Credentials file not found: {secrets}")
 
+    already = granted_scopes(cfg, resolved_token)
+    # Consent REPLACES the token's scope list, so asking for exactly `requested` would strip
+    # everything the token already carries. A profile that gains admin scopes would silently
+    # lose gmail.send, calendar, drive and tasks — the 0.8.2 failure with a new face. Union,
+    # so re-consent can only ever add capability.
+    target_scopes = list(dict.fromkeys([*already, *requested]))
     existing = load_credentials(token_path=resolved_token, config=cfg)
-    missing = [
-        scope for scope in target_scopes if scope not in granted_scopes(cfg, resolved_token)
-    ]
+    missing = [scope for scope in requested if scope not in already]
     if existing and existing.valid and not missing:
         return existing
     if existing and existing.valid:
@@ -487,6 +504,18 @@ def register_auth_commands(auth_group: click.Group) -> None:
         default=None,
         help="Redeem a pasted redirect URL (or bare code) instead of prompting for it.",
     )
+    @click.option(
+        "--admin",
+        "admin_mode",
+        is_flag=True,
+        help="Also consent to read-only Workspace administration (Directory, Chrome telemetry).",
+    )
+    @click.option(
+        "--admin-write",
+        "admin_write_mode",
+        is_flag=True,
+        help="Consent to administration that can CHANGE the domain: create, suspend, delete.",
+    )
     @json_option
     @click.pass_context
     def login_cmd(
@@ -495,10 +524,16 @@ def register_auth_commands(auth_group: click.Group) -> None:
         redirect_uri: str | None,
         url_only: bool,
         code: str | None,
+        admin_mode: bool,
+        admin_write_mode: bool,
         json_output: bool | None,
     ) -> None:
         config = cast(GWConfig, ctx.obj["config"])
+        extra_scopes = (
+            ADMIN_WRITE_SCOPES if admin_write_mode else (ADMIN_SCOPES if admin_mode else None)
+        )
         creds = login(
+            scopes=extra_scopes,
             headless=headless,
             config=config,
             redirect_uri=redirect_uri,

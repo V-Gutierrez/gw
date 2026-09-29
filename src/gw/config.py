@@ -222,4 +222,10 @@ def load_config(path: Path | None = None, profile: str | None = None) -> GWConfi
     if profile is not None and "token_path" not in profile_known:
         merged["token_path"] = _profile_token_path(str(merged["token_path"]), profile)
 
+    if profile is not None and "scopes" not in profile_known:
+        # Scopes never inherit from the root into a named profile. Every other key may:
+        # a root `timezone` applying everywhere is convenience, a root `scopes` applying
+        # everywhere is a silent privilege grant to profiles that never asked for it.
+        merged["scopes"] = None
+
     return GWConfig(profile=profile, **merged, _extra={**extra, **profile_extra})

@@ -675,7 +675,12 @@ class TestCLICommands:
         assert result.exit_code == 0
         assert "Authenticated" in result.output
         mock_login.assert_called_once_with(
-            headless=False, config=auth_config, redirect_uri=None, url_only=False, code=None
+            scopes=None,
+            headless=False,
+            config=auth_config,
+            redirect_uri=None,
+            url_only=False,
+            code=None,
         )
 
     @pytest.mark.usefixtures("_patch_config")
@@ -693,7 +698,12 @@ class TestCLICommands:
 
         assert result.exit_code == 0
         mock_login.assert_called_once_with(
-            headless=True, config=auth_config, redirect_uri=None, url_only=False, code=None
+            scopes=None,
+            headless=True,
+            config=auth_config,
+            redirect_uri=None,
+            url_only=False,
+            code=None,
         )
 
     @pytest.mark.usefixtures("_patch_config")
@@ -715,6 +725,7 @@ class TestCLICommands:
 
         assert result.exit_code == 0
         mock_login.assert_called_once_with(
+            scopes=None,
             headless=True,
             config=auth_config,
             redirect_uri="http://127.0.0.1:9000",
@@ -841,7 +852,12 @@ class TestScopeDrift:
 
         assert result is fresh
         mock_flow_cls.from_client_secrets_file.assert_called_once()
-        assert mock_flow_cls.from_client_secrets_file.call_args.args[1] == DEFAULT_SCOPES
+        # The union, not the replacement: consent overwrites the token's scope list, so
+        # asking for exactly DEFAULT_SCOPES would silently strip the `openid` it already has.
+        assert mock_flow_cls.from_client_secrets_file.call_args.args[1] == [
+            "openid",
+            *[scope for scope in DEFAULT_SCOPES if scope != "openid"],
+        ]
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.InstalledAppFlow")

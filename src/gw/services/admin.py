@@ -14,8 +14,11 @@ complete set — a truncated inventory still looks like an inventory. Directory 
 page at 100–500 rows depending on the endpoint, so a single call would have quietly
 dropped everything past the first page of an 82-machine estate.
 
-**Nothing writes.** Suspending a user or wiping a device has no undo, so the mutating half
-of the Admin SDK is deliberately absent rather than merely unused.
+**Writes exist, and they are gated by blast radius.** Every mutating command takes
+``--yes`` to skip its confirmation and ``--dry-run`` to prove what it would send without
+sending it. ``device-action`` is the exception: ``--yes`` does not arm it, because wiping
+the wrong laptop has no undo — the device's serial has to be retyped and matched against
+what the API reports.
 """
 
 from __future__ import annotations
@@ -27,8 +30,8 @@ import click
 
 from gw.auth import build_service, execute_google_request
 from gw.config import GWConfig
-from gw.errors import GwError
-from gw.output import json_option, print_human, print_json, use_json_output
+from gw.errors import EXIT_GENERAL, GwError
+from gw.output import json_option, print_human, print_json, print_success, use_json_output
 
 # The Admin SDK resolves this literal to the domain the caller administers, which keeps the
 # numeric customer ID out of config and out of this repo.
@@ -58,8 +61,14 @@ def _paginate(
     complete inventory. The page size is clamped to what is still missing so a ``--limit 2``
     does not pull 500 rows to throw 498 away.
     """
+    if limit < 0:
+        # `collected[:-1]` would drop rows instead of capping them, so a negative limit used
+        # to print `0 row(s)` and exit 0 — an empty domain reported as success.
+        raise GwError("--limit must be zero (every page) or a positive number of rows.")
+
     collected: list[dict[str, Any]] = []
     page_token: str | None = None
+    seen_tokens: set[str] = set()
 
     while True:
         request_params = dict(params)
@@ -74,6 +83,11 @@ def _paginate(
         page_token = response.get("nextPageToken")
         if not page_token or (limit and len(collected) >= limit):
             break
+        if page_token in seen_tokens:
+            # A server that keeps handing back the same cursor would spin here forever.
+            # Stopping with what we have beats a process that never returns.
+            break
+        seen_tokens.add(page_token)
 
     return collected[:limit] if limit else collected
 
@@ -189,8 +203,9 @@ def list_admin_chromeos(limit: int = 0, config: GWConfig | None = None) -> list[
         service.chromeosdevices().list,
         items_key="chromeosdevices",
         limit=limit,
-        page_size=100,
+        page_size=300,
         customerId=CUSTOMER,
+        projection="FULL",
     )
     return [_normalize_chromeos(row) for row in rows]
 
@@ -216,6 +231,7 @@ def list_admin_mobile(limit: int = 0, config: GWConfig | None = None) -> list[di
         limit=limit,
         page_size=100,
         customerId=CUSTOMER,
+        projection="FULL",
     )
     return [_normalize_mobile(row) for row in rows]
 
@@ -269,8 +285,11 @@ def admin_whoami(config: GWConfig | None = None) -> dict[str, Any]:
     def probe(name: str, call: Callable[[], Any]) -> None:
         try:
             call()
-        except (GwError, Exception) as exc:  # noqa: BLE001 - a probe reports, never raises
-            probes.append({"api": name, "reachable": False, "error": str(exc)})
+        except GwError as exc:
+            # Only a refusal from Google counts as "unreachable". A TypeError from a wrong
+            # kwarg is our bug, and swallowing it here would disguise it as a denied API —
+            # in the one command that exists to tell those two apart.
+            probes.append({"api": name, "reachable": False, "error": exc.message})
         else:
             probes.append({"api": name, "reachable": True, "error": None})
 
@@ -304,6 +323,158 @@ def admin_whoami(config: GWConfig | None = None) -> dict[str, Any]:
     return {"ok": all(entry["reachable"] for entry in probes), "probes": probes}
 
 
+# --------------------------------------------------------------------------- writes
+#
+# Victor's decision, 2026-09-29: the group manages the domain, it does not only read it.
+# Three rails, in order of how much they cost when they are missing:
+#
+# 1. `--dry-run` returns the exact body that would be sent, having called nothing.
+# 2. `--yes` skips an interactive confirmation that otherwise blocks.
+# 3. `device-action` ignores `--yes` entirely and demands the serial, because a wipe is
+#    the one operation here whose victim is a person who did nothing wrong.
+
+
+def _confirm(action: str, target: str, *, yes: bool) -> None:
+    if yes:
+        return
+    click.confirm(f"{action} {target}?", abort=True)
+
+
+def _redact(row: dict[str, Any]) -> dict[str, Any]:
+    """Google echoes the password back on users.insert. It must not reach stdout."""
+    return {key: value for key, value in row.items() if key not in {"password", "hashFunction"}}
+
+
+def create_admin_user(
+    email: str,
+    first_name: str,
+    last_name: str,
+    password: str,
+    org_unit: str | None = None,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "primaryEmail": email,
+        "name": {"givenName": first_name, "familyName": last_name},
+        "password": password,
+        # A password typed by an admin is a shared secret until the owner replaces it.
+        "changePasswordAtNextLogin": True,
+    }
+    if org_unit:
+        body["orgUnitPath"] = org_unit
+
+    if dry_run:
+        return {"dry_run": True, "would_call": "users.insert", "body": _redact(body)}
+
+    service = _directory_service(config)
+    return _redact(execute_google_request(service.users().insert(body=body)))
+
+
+def set_admin_user_suspended(
+    email: str,
+    suspended: bool,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    body = {"suspended": suspended}
+    if dry_run:
+        return {"dry_run": True, "would_call": "users.update", "userKey": email, "body": body}
+
+    service = _directory_service(config)
+    return _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+
+
+def move_admin_user(
+    email: str,
+    org_unit: str,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    body = {"orgUnitPath": org_unit}
+    if dry_run:
+        return {"dry_run": True, "would_call": "users.update", "userKey": email, "body": body}
+
+    service = _directory_service(config)
+    return _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+
+
+def add_admin_group_member(
+    group: str,
+    member: str,
+    role: str = "MEMBER",
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    body = {"email": member, "role": role}
+    if dry_run:
+        return {"dry_run": True, "would_call": "members.insert", "groupKey": group, "body": body}
+
+    service = _directory_service(config)
+    return execute_google_request(service.members().insert(groupKey=group, body=body))
+
+
+def remove_admin_group_member(
+    group: str,
+    member: str,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_call": "members.delete",
+            "groupKey": group,
+            "memberKey": member,
+        }
+
+    service = _directory_service(config)
+    execute_google_request(service.members().delete(groupKey=group, memberKey=member))
+    return {"removed": member, "group": group}
+
+
+DEVICE_ACTIONS = ("disable", "reenable", "deprovision", "wipe_users", "remote_powerwash")
+
+
+def act_on_chromeos_device(
+    device_id: str,
+    action: str,
+    confirm_serial: str,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Refuse unless the caller retyped the serial the API reports for this device.
+
+    `--yes` deliberately does not arm this: an ID typed one character off names a different
+    machine, and the confirmation prompt for a wipe is the last thing standing between a
+    typo and someone's working day.
+    """
+    service = _directory_service(config)
+    device = execute_google_request(
+        service.chromeosdevices().get(customerId=CUSTOMER, deviceId=device_id)
+    )
+    actual_serial = device.get("serialNumber")
+    if confirm_serial != actual_serial:
+        raise GwError(
+            f"Serial mismatch: device {device_id} reports {actual_serial!r}, "
+            f"you typed {confirm_serial!r}. Nothing was done."
+        )
+
+    body = {"action": action}
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_call": "chromeosdevices.action",
+            "deviceId": device_id,
+            "body": body,
+        }
+
+    execute_google_request(
+        service.chromeosdevices().action(customerId=CUSTOMER, resourceId=device_id, body=body)
+    )
+    return {"deviceId": device_id, "serialNumber": actual_serial, "action": action}
+
+
 # --------------------------------------------------------------------------- CLI
 
 
@@ -316,12 +487,36 @@ def _emit(ctx: click.Context, json_output: bool | None, rows: list[dict[str, Any
         print_human(f"{len(rows)} row(s)")
 
 
+def _emit_one(
+    ctx: click.Context, json_output: bool | None, data: dict[str, Any], line: str
+) -> None:
+    if use_json_output(ctx, json_output):
+        print_json(data)
+    elif data.get("dry_run"):
+        print_human(f"[dry-run] {data['would_call']} — nothing was sent")
+    else:
+        print_success(line)
+
+
+def _exit_on_failed_probe(ctx: click.Context, data: dict[str, Any]) -> None:
+    """Non-zero when any API said no, so `gw admin whoami && ...` means what it looks like."""
+    if not data["ok"]:
+        ctx.exit(EXIT_GENERAL)
+
+
+def _validate_limit(ctx: click.Context, param: click.Parameter, value: int) -> int:
+    if value < 0:
+        raise click.BadParameter("must be 0 (every page) or a positive number of rows.")
+    return value
+
+
 def _limit_option(fn):
     return click.option(
         "--limit",
         default=0,
         show_default=True,
         type=int,
+        callback=_validate_limit,
         help="Stop after N rows. 0 fetches every page.",
     )(fn)
 
@@ -428,7 +623,174 @@ def register_admin_commands(group: click.Group) -> None:
         data = admin_whoami(config=ctx.obj["config"])
         if use_json_output(ctx, json_output):
             print_json(data)
+            _exit_on_failed_probe(ctx, data)
             return
         for entry in data["probes"]:
             mark = "ok" if entry["reachable"] else f"FAIL — {entry['error']}"
             print_human(f"{entry['api']}: {mark}")
+        _exit_on_failed_probe(ctx, data)
+
+    # ----------------------------------------------------------------- writes
+
+    def _write_options(fn):
+        fn = click.option(
+            "--dry-run", is_flag=True, help="Print what would be sent; call nothing."
+        )(fn)
+        fn = click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")(fn)
+        return fn
+
+    @group.command("user-create")
+    @click.argument("email")
+    @click.option("--first-name", required=True)
+    @click.option("--last-name", required=True)
+    @click.option("--password", required=True, help="Temporary; the user must change it at login.")
+    @click.option("--org-unit", default=None, help="Org unit path, e.g. /Ops.")
+    @_write_options
+    @json_option
+    @click.pass_context
+    def user_create_command(
+        ctx: click.Context,
+        email: str,
+        first_name: str,
+        last_name: str,
+        password: str,
+        org_unit: str | None,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        _confirm("Create user", email, yes=yes)
+        data = create_admin_user(
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+            password=password,
+            org_unit=org_unit,
+            dry_run=dry_run,
+            config=ctx.obj["config"],
+        )
+        _emit_one(ctx, json_output, data, f"User created: {email}")
+
+    @group.command("user-suspend")
+    @click.argument("email")
+    @_write_options
+    @json_option
+    @click.pass_context
+    def user_suspend_command(
+        ctx: click.Context, email: str, yes: bool, dry_run: bool, json_output: bool | None
+    ) -> None:
+        _confirm("Suspend user", email, yes=yes)
+        data = set_admin_user_suspended(
+            email=email, suspended=True, dry_run=dry_run, config=ctx.obj["config"]
+        )
+        _emit_one(ctx, json_output, data, f"User suspended: {email}")
+
+    @group.command("user-restore")
+    @click.argument("email")
+    @_write_options
+    @json_option
+    @click.pass_context
+    def user_restore_command(
+        ctx: click.Context, email: str, yes: bool, dry_run: bool, json_output: bool | None
+    ) -> None:
+        _confirm("Restore user", email, yes=yes)
+        data = set_admin_user_suspended(
+            email=email, suspended=False, dry_run=dry_run, config=ctx.obj["config"]
+        )
+        _emit_one(ctx, json_output, data, f"User restored: {email}")
+
+    @group.command("user-move")
+    @click.argument("email")
+    @click.argument("org_unit")
+    @_write_options
+    @json_option
+    @click.pass_context
+    def user_move_command(
+        ctx: click.Context,
+        email: str,
+        org_unit: str,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        _confirm(f"Move {email} to", org_unit, yes=yes)
+        data = move_admin_user(
+            email=email, org_unit=org_unit, dry_run=dry_run, config=ctx.obj["config"]
+        )
+        _emit_one(ctx, json_output, data, f"User moved: {email} -> {org_unit}")
+
+    @group.command("group-add")
+    @click.argument("group_email")
+    @click.argument("member")
+    @click.option("--role", default="MEMBER", type=click.Choice(["MEMBER", "MANAGER", "OWNER"]))
+    @_write_options
+    @json_option
+    @click.pass_context
+    def group_add_command(
+        ctx: click.Context,
+        group_email: str,
+        member: str,
+        role: str,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        _confirm(f"Add {member} to", group_email, yes=yes)
+        data = add_admin_group_member(
+            group=group_email, member=member, role=role, dry_run=dry_run, config=ctx.obj["config"]
+        )
+        _emit_one(ctx, json_output, data, f"Added {member} to {group_email}")
+
+    @group.command("group-remove")
+    @click.argument("group_email")
+    @click.argument("member")
+    @_write_options
+    @json_option
+    @click.pass_context
+    def group_remove_command(
+        ctx: click.Context,
+        group_email: str,
+        member: str,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        _confirm(f"Remove {member} from", group_email, yes=yes)
+        data = remove_admin_group_member(
+            group=group_email, member=member, dry_run=dry_run, config=ctx.obj["config"]
+        )
+        _emit_one(ctx, json_output, data, f"Removed {member} from {group_email}")
+
+    @group.command("device-action")
+    @click.argument("device_id")
+    @click.argument("action", type=click.Choice(DEVICE_ACTIONS))
+    @click.option(
+        "--confirm-serial",
+        default=None,
+        help="The device's serial, retyped. Required — --yes does not arm this command.",
+    )
+    @_write_options
+    @json_option
+    @click.pass_context
+    def device_action_command(
+        ctx: click.Context,
+        device_id: str,
+        action: str,
+        confirm_serial: str | None,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        if not confirm_serial:
+            raise click.UsageError(
+                "device-action requires --confirm-serial: retype the serial of the device you "
+                "mean. --yes does not cover this command, because a wipe has no undo."
+            )
+        data = act_on_chromeos_device(
+            device_id=device_id,
+            action=action,
+            confirm_serial=confirm_serial,
+            dry_run=dry_run,
+            config=ctx.obj["config"],
+        )
+        _emit_one(ctx, json_output, data, f"{action} sent to {device_id}")

@@ -9,13 +9,18 @@ from mcp.server.fastmcp import FastMCP
 from gw.auth import _get_config
 from gw.config import GWConfig
 from gw.services.admin import (
+    add_admin_group_member,
     admin_whoami,
+    create_admin_user,
     list_admin_chromeos,
     list_admin_groups,
     list_admin_mobile,
     list_admin_orgunits,
     list_admin_telemetry,
     list_admin_users,
+    move_admin_user,
+    remove_admin_group_member,
+    set_admin_user_suspended,
 )
 from gw.services.calendar import (
     create_calendar_event,
@@ -522,6 +527,71 @@ def admin_telemetry(limit: int = 0) -> list:
 def admin_check_access() -> dict:
     """Probe each admin API and report which ones answer. Never raises on a denied API."""
     return admin_whoami(config=_config())
+
+
+# --------------------------------------------------------------------------- admin writes
+#
+# Reversible operations only. `act_on_chromeos_device` is deliberately NOT exposed here:
+# a wipe has no undo, and its rail is a serial retyped by a human at a terminal — which is
+# exactly the thing an MCP caller cannot be asked to do. It stays CLI-only on purpose.
+
+
+@mcp_server.tool()
+def admin_user_create(
+    email: str,
+    first_name: str,
+    last_name: str,
+    password: str,
+    org_unit: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Create a Workspace user. Defaults to dry_run=True — pass dry_run=False to apply.
+
+    The password is redacted from the result; it never comes back through this channel.
+    """
+    return create_admin_user(
+        email=email,
+        first_name=first_name,
+        last_name=last_name,
+        password=password,
+        org_unit=org_unit,
+        dry_run=dry_run,
+        config=_config(),
+    )
+
+
+@mcp_server.tool()
+def admin_user_suspend(email: str, dry_run: bool = True) -> dict:
+    """Suspend a user. Reversible with admin_user_restore. Defaults to dry_run=True."""
+    return set_admin_user_suspended(email=email, suspended=True, dry_run=dry_run, config=_config())
+
+
+@mcp_server.tool()
+def admin_user_restore(email: str, dry_run: bool = True) -> dict:
+    """Un-suspend a user. Defaults to dry_run=True."""
+    return set_admin_user_suspended(
+        email=email, suspended=False, dry_run=dry_run, config=_config()
+    )
+
+
+@mcp_server.tool()
+def admin_user_move(email: str, org_unit: str, dry_run: bool = True) -> dict:
+    """Move a user to another org unit. Defaults to dry_run=True."""
+    return move_admin_user(email=email, org_unit=org_unit, dry_run=dry_run, config=_config())
+
+
+@mcp_server.tool()
+def admin_group_add(group: str, member: str, role: str = "MEMBER", dry_run: bool = True) -> dict:
+    """Add a member to a group. Defaults to dry_run=True."""
+    return add_admin_group_member(
+        group=group, member=member, role=role, dry_run=dry_run, config=_config()
+    )
+
+
+@mcp_server.tool()
+def admin_group_remove(group: str, member: str, dry_run: bool = True) -> dict:
+    """Remove a member from a group. Defaults to dry_run=True."""
+    return remove_admin_group_member(group=group, member=member, dry_run=dry_run, config=_config())
 
 
 def run_mcp_server() -> None:
