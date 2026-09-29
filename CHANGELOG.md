@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.9.3 (2026-09-29)
+
+Três correções no grupo `admin`, encontradas ao reler as 911 linhas de escrita. Nenhuma
+alterava o domínio; todas faziam o comando prometer mais do que cumpria.
+
+### Fixed
+- **`--dry-run` não chamava nada — nos comandos de dispositivo chamava.** `device-action`
+  e `mobile-action` leem o serial do alvo para conferir o retype, porque um `deviceId` é
+  opaco e não se sabe quem é sem perguntar. Essa leitura acontece em dry run também, e o
+  help prometia «call nothing». Passa a «change nothing», que é o que se cumpre nos cinco:
+  nada é alterado, e nos outros três nem se telefona.
+- **O corpo do dry run escondia a password em vez de a marcar.** O `_redact` deitava fora
+  a chave `password`, por isso `user-create --dry-run` mostrava um corpo sem password
+  nenhuma e quem lê o ensaio não via que ela ia ser definida. É a mesma omissão silenciosa
+  que a 0.9.2 corrigiu no código de saída, agora no corpo.
+- **`user-delete` dizia que tinha perguntado à API.** A recusa lia-se «target reports
+  'a@x.com'» quando o valor comparado era o argumento escrito na própria linha de comando.
+  Só os dois comandos de dispositivo podem falar em nome da API. A mensagem diz agora de
+  onde veio a referência.
+
+### Added
+- Três testes que fixam o que cada dry run faz de facto: um exige que o campo da password
+  apareça marcado e o valor nunca, um prende a leitura do serial em `device-action` e a
+  ausência da ação, outro exige que a recusa não se disfarce de verificação independente.
+
 ## v0.9.2 (2026-09-29)
 
 Duas coisas que só apareceram quando os comandos correram contra o domínio a sério, e não

@@ -353,8 +353,14 @@ def _confirm(action: str, target: str, *, yes: bool, dry_run: bool = False) -> N
 
 
 def _redact(row: dict[str, Any]) -> dict[str, Any]:
-    """Google echoes the password back on users.insert. It must not reach stdout."""
-    return {key: value for key, value in row.items() if key not in {"password", "hashFunction"}}
+    """Secrets never reach stdout, but the key stays and is marked.
+
+    Google echoes the password back on users.insert, and the dry-run body carries the one
+    the admin typed. Dropping the key made the rehearsal lie by omission: `user-create
+    --dry-run` printed a body with no password field at all, so nothing showed that one was
+    being set.
+    """
+    return {key: "***" if key == "password" else value for key, value in row.items()}
 
 
 def create_admin_user(
@@ -460,6 +466,10 @@ def act_on_chromeos_device(
     `--yes` deliberately does not arm this: an ID typed one character off names a different
     machine, and the confirmation prompt for a wipe is the last thing standing between a
     typo and someone's working day.
+
+    The serial is read from the API even under --dry-run: an opaque deviceId can only be
+    resolved by asking. That lookup is a read, nothing about the device changes, and it
+    makes this and `mobile-action` the only commands here whose dry run is not offline.
     """
     service = _directory_service(config)
     device = execute_google_request(
@@ -581,8 +591,23 @@ def list_admin_reports(
     return [_normalize_activity(row) for row in rows]
 
 
-def _require_match(kind: str, typed: str | None, actual: str | None, what: str) -> None:
-    """Irreversible commands take the name retyped, never a bare --yes."""
+def _require_match(
+    kind: str,
+    typed: str | None,
+    actual: str | None,
+    what: str,
+    *,
+    against: str,
+) -> None:
+    """Irreversible commands take the name retyped, never a bare --yes.
+
+    `against` names where the reference value came from, because the callers do not source
+    it the same way. A mobile serial has to be asked of the API: the resource id is opaque,
+    so it names a phone nobody can see. A user's email, a group's email and an org unit path
+    are already the key, so the reference is the argument the operator typed in that same
+    command. Announcing "the target reports" in the second case dressed a copy of the input
+    as an independent check, and it was false.
+    """
     if not typed:
         raise click.UsageError(
             f"{what} requires --confirm-{kind}: retype the {kind} of what you mean. "
@@ -590,7 +615,7 @@ def _require_match(kind: str, typed: str | None, actual: str | None, what: str) 
         )
     if typed != actual:
         raise GwError(
-            f"{kind.capitalize()} mismatch: target reports {actual!r}, you typed {typed!r}. "
+            f"{kind.capitalize()} mismatch: {against} {actual!r}, you typed {typed!r}. "
             "Nothing was done."
         )
 
@@ -602,7 +627,7 @@ def delete_admin_user(
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     """Deleting a user destroys their Drive and Gmail. Transfer first, then delete."""
-    _require_match("email", confirm_email, email, "user-delete")
+    _require_match("email", confirm_email, email, "user-delete", against="the command names")
     if dry_run:
         return {"dry_run": True, "would_call": "users.delete", "userKey": email}
 
@@ -685,7 +710,7 @@ def delete_admin_group(
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
     """The membership list goes with it, and no API brings it back."""
-    _require_match("email", confirm_email, email, "group-delete")
+    _require_match("email", confirm_email, email, "group-delete", against="the command names")
     if dry_run:
         return {"dry_run": True, "would_call": "groups.delete", "groupKey": email}
 
@@ -716,7 +741,7 @@ def delete_admin_orgunit(
     dry_run: bool = False,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
-    _require_match("path", confirm_path, path, "orgunit-delete")
+    _require_match("path", confirm_path, path, "orgunit-delete", against="the command names")
     if dry_run:
         return {"dry_run": True, "would_call": "orgunits.delete", "orgUnitPath": path}
 
@@ -741,11 +766,23 @@ def act_on_mobile_device(
     dry_run: bool = False,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
+    """Refuse unless the caller retyped the serial of this resource.
+
+    Same rail as `act_on_chromeos_device`, and the same caveat: proving the retype means
+    asking the registry who owns that opaque resource id, so the read happens under
+    --dry-run too. Nothing is changed either way.
+    """
     service = _directory_service(config)
     device = execute_google_request(
         service.mobiledevices().get(customerId=CUSTOMER, resourceId=resource_id)
     )
-    _require_match("serial", confirm_serial, device.get("serialNumber"), "mobile-action")
+    _require_match(
+        "serial",
+        confirm_serial,
+        device.get("serialNumber"),
+        "mobile-action",
+        against="the device reports",
+    )
 
     body = {"action": action}
     if dry_run:
@@ -921,7 +958,7 @@ def register_admin_commands(group: click.Group) -> None:
 
     def _write_options(fn):
         fn = click.option(
-            "--dry-run", is_flag=True, help="Print what would be sent; call nothing."
+            "--dry-run", is_flag=True, help="Print what would be sent; change nothing."
         )(fn)
         fn = click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")(fn)
         return fn

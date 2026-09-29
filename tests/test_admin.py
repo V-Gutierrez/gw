@@ -998,3 +998,101 @@ def test_a_write_that_is_not_a_dry_run_still_asks(mock_build_service: MagicMock)
 
     assert result.exit_code != 0
     assert "Create user ana@example.com?" in result.output
+
+
+@patch("gw.services.admin.build_service")
+def test_dry_run_shows_the_password_field_it_would_send(mock_build_service: MagicMock):
+    """Hiding a value is not the same as hiding that the value exists.
+
+    `_redact` dropped the `password` key, so `user-create --dry-run` printed a body with no
+    password in it at all — a rehearsal that cannot show the one field the command exists to
+    set. The key stays, marked; the value never does.
+    """
+    mock_build_service.return_value = MagicMock()
+
+    created = runner.invoke(
+        main,
+        [
+            "admin",
+            "user-create",
+            "ana@example.com",
+            "--first-name",
+            "Ana",
+            "--last-name",
+            "Teste",
+            "--password",
+            "Tmp!12345",
+            "--dry-run",
+            "--json",
+        ],
+    )
+    assert created.exit_code == 0
+    assert json.loads(created.output)["body"]["password"] == "***"
+    assert "Tmp!12345" not in created.output
+
+    reset = runner.invoke(
+        main,
+        ["admin", "user-password", "ana@example.com", "--password", "Tmp!12345", "--dry-run", "--json"],
+    )
+    assert reset.exit_code == 0
+    assert json.loads(reset.output)["body"]["password"] == "***"
+    assert "Tmp!12345" not in reset.output
+
+
+@patch("gw.services.admin.build_service")
+def test_dry_run_on_a_device_reads_the_serial_and_changes_nothing(mock_build_service: MagicMock):
+    """The two device commands cannot dry-run offline, and said so incorrectly.
+
+    Proving the retyped serial needs the registry, because a deviceId is opaque. That read
+    happens under --dry-run as well; what must never happen is the action. The help text
+    claimed "call nothing", which was false.
+    """
+    service = MagicMock()
+    service.chromeosdevices.return_value.get.return_value = _mock_execute({"serialNumber": "SN1"})
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main,
+        [
+            "admin",
+            "device-action",
+            "dev-1",
+            "disable",
+            "--confirm-serial",
+            "SN1",
+            "--dry-run",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["would_call"] == "chromeosdevices.action"
+    assert service.chromeosdevices.return_value.get.call_count == 1
+    assert service.chromeosdevices.return_value.action.call_count == 0
+    assert "change nothing" in runner.invoke(main, ["admin", "device-action", "--help"]).output
+
+
+@patch("gw.services.admin.build_service")
+def test_user_delete_does_not_dress_the_input_as_an_api_check(mock_build_service: MagicMock):
+    """A user's email is already the key, so the reference is the argument, not Google.
+
+    The refusal used to read "target reports 'a@x.com'", describing a copy of what the
+    operator had just typed as if the API had been asked. Only the device commands can do
+    that, because only there is the name opaque. Assert both halves: the wording, and that
+    no lookup happened.
+    """
+    from gw.errors import GwError
+
+    service = MagicMock()
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main, ["admin", "user-delete", "a@x.com", "--confirm-email", "b@x.com", "--json"]
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, GwError)
+    assert "the command names" in result.exception.message
+    assert "reports" not in result.exception.message
+    assert service.users.return_value.get.call_count == 0
+    service.users.return_value.delete.assert_not_called()
