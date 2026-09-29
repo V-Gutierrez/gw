@@ -1038,3 +1038,30 @@ def test_run_cli_maps_config_errors_to_code_3_json(capsys):
     captured = capsys.readouterr()
     assert exit_code == EXIT_CONFIG
     assert json.loads(captured.err) == {"error": "broken config", "code": 3}
+
+
+@patch("gw.services.admin.build_service")
+def test_run_cli_returns_the_code_a_command_exited_with(mock_build_service: MagicMock):
+    """`ctx.exit(1)` reached run_cli as a return value, and run_cli threw it away.
+
+    `gw admin whoami` is a gate: it reports which admin APIs answer, and exits non-zero
+    when one refuses. Under standalone_mode=False click converts Exit into the *return
+    value* of `main()`; run_cli ignored that value and reported success. Every
+    CliRunner-based test kept passing, because CliRunner runs the default
+    standalone_mode=True — where click raises SystemExit and the runner reads the code.
+    The entry point the console script actually calls was the one nobody exercised.
+    """
+    from gw.errors import GwError
+
+    service = MagicMock()
+    service.users.return_value.list.side_effect = GwError("denied")
+    service.groups.return_value.list.side_effect = GwError("denied")
+    service.chromeosdevices.return_value.list.side_effect = GwError("denied")
+    telemetry = service.customers.return_value.telemetry.return_value.devices.return_value
+    telemetry.list.side_effect = GwError("denied")
+    mock_build_service.return_value = service
+
+    with patch("gw.cli.load_runtime_config", return_value=MagicMock()):
+        exit_code = run_cli(["--json", "admin", "whoami"])
+
+    assert exit_code == EXIT_GENERAL

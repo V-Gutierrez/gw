@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.9.2 (2026-09-29)
+
+Duas coisas que só apareceram quando os comandos correram contra o domínio a sério, e não
+contra mocks.
+
+### Fixed
+- **`gw admin whoami` imprimia quatro FAIL e saía 0.** O comando existe para servir de
+  porteiro num script — `gw admin whoami && ...` — e o `ctx.exit(1)` que devia falhar a
+  sessão era engolido pelo `run_cli`. Com `standalone_mode=False`, o click converte o
+  `Exit` no **valor devolvido** por `main()` em vez de o levantar; o `run_cli` ignorava
+  esse valor e respondia sucesso. Os 367 testes continuavam verdes porque o `CliRunner`
+  corre com o `standalone_mode=True` por omissão, onde o click levanta `SystemExit` e o
+  runner lê o código — o único caminho cego era o ponto de entrada que o binário chama.
+- **`--dry-run` pedia confirmação.** O travão que nada muda não deve fazer perguntas: o
+  comando ficava à espera de um `y/N` que num script nunca chega, e por isso só
+  `--dry-run --yes` — combinação sem sentido de escrever — chegava a produzir o corpo
+  exato. O retype do nome que os cinco comandos irreversíveis exigem continua a valer em
+  dry run: o ensaio tem de provar que a invocação real é válida.
+
+### Added
+- Três testes que fecham as duas cegueiras: um corre `run_cli` a sério e exige código
+  não-zero, um exige que `--dry-run` não pergunte nada, e um guarda que a escrita real
+  continue a perguntar.
+
 ## v0.9.1 (2026-09-29)
 
 ### Fixed

@@ -936,3 +936,65 @@ def test_every_destructive_command_refuses_yes_alone():
     for command, flag in irreversible.items():
         help_text = runner.invoke(main, ["admin", command, "--help"]).output
         assert flag in help_text, command
+
+
+# --------------------------------------------------------------------------- dry run
+
+
+@patch("gw.services.admin.build_service")
+def test_dry_run_never_asks_for_confirmation(mock_build_service: MagicMock):
+    """A dry run that stops to ask a question is unusable in the scripts it exists for.
+
+    Found by running it, not here: `gw admin user-create ... --dry-run` printed the
+    prompt and aborted, because the caller's stdin was not a terminal. Only
+    `--dry-run --yes` got through, which is a nonsense thing to have to type.
+    """
+    service = MagicMock()
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main,
+        [
+            "admin",
+            "user-create",
+            "ana@example.com",
+            "--first-name",
+            "Ana",
+            "--last-name",
+            "Teste",
+            "--password",
+            "Tmp!12345",
+            "--dry-run",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["dry_run"] is True
+    assert service.users.return_value.insert.call_count == 0
+
+
+@patch("gw.services.admin.build_service")
+def test_a_write_that_is_not_a_dry_run_still_asks(mock_build_service: MagicMock):
+    """Skipping the question on a dry run must not skip it on the real thing."""
+    service = MagicMock()
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main,
+        [
+            "admin",
+            "user-create",
+            "ana@example.com",
+            "--first-name",
+            "Ana",
+            "--last-name",
+            "Teste",
+            "--password",
+            "Tmp!12345",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Create user ana@example.com?" in result.output

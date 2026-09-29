@@ -42,12 +42,14 @@ def run_cli(argv: Sequence[str] | None = None, *, prog_name: str = "gw") -> int:
     use_json = _argv_requests_json(argv)
 
     try:
-        main_group.main(
+        returned = main_group.main(
             args=list(argv) if argv is not None else None,
             prog_name=prog_name,
             standalone_mode=False,
         )
     except click.exceptions.Exit as exc:
+        # click 8.1 does not come through here: under standalone_mode=False it converts the
+        # Exit into the return value read below. Kept for the day it goes back to raising.
         return exc.exit_code
     except click.UsageError as exc:
         render_error(_format_click_error(exc), EXIT_GENERAL, use_json=use_json)
@@ -68,7 +70,11 @@ def run_cli(argv: Sequence[str] | None = None, *, prog_name: str = "gw") -> int:
         render_error(str(exc), EXIT_GENERAL, use_json=use_json)
         return EXIT_GENERAL
 
-    return EXIT_SUCCESS
+    # A command that calls ctx.exit(1) does not raise anything at this level: with
+    # standalone_mode=False, click hands the code back as the return value instead of
+    # raising SystemExit. Dropping it made `gw admin whoami` print four FAILs and exit 0,
+    # which is the one outcome that command exists to prevent.
+    return returned if isinstance(returned, int) else EXIT_SUCCESS
 
 
 @click.group()

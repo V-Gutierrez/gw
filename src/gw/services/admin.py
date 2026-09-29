@@ -339,8 +339,15 @@ def admin_whoami(config: GWConfig | None = None) -> dict[str, Any]:
 #    the one operation here whose victim is a person who did nothing wrong.
 
 
-def _confirm(action: str, target: str, *, yes: bool) -> None:
-    if yes:
+def _confirm(action: str, target: str, *, yes: bool, dry_run: bool = False) -> None:
+    """Ask before changing the domain.
+
+    A dry run changes nothing even if it goes wrong, so it never asks: a prompt makes
+    `--dry-run` unusable in exactly the scripts it exists for. The retyped argument the
+    irreversible commands demand is a different rail and still applies — the rehearsal has
+    to prove the real invocation is valid.
+    """
+    if yes or dry_run:
         return
     click.confirm(f"{action} {target}?", abort=True)
 
@@ -939,7 +946,7 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
-        _confirm("Create user", email, yes=yes)
+        _confirm("Create user", email, yes=yes, dry_run=dry_run)
         data = create_admin_user(
             email=email,
             first_name=first_name,
@@ -959,7 +966,7 @@ def register_admin_commands(group: click.Group) -> None:
     def user_suspend_command(
         ctx: click.Context, email: str, yes: bool, dry_run: bool, json_output: bool | None
     ) -> None:
-        _confirm("Suspend user", email, yes=yes)
+        _confirm("Suspend user", email, yes=yes, dry_run=dry_run)
         data = set_admin_user_suspended(
             email=email, suspended=True, dry_run=dry_run, config=ctx.obj["config"]
         )
@@ -973,7 +980,7 @@ def register_admin_commands(group: click.Group) -> None:
     def user_restore_command(
         ctx: click.Context, email: str, yes: bool, dry_run: bool, json_output: bool | None
     ) -> None:
-        _confirm("Restore user", email, yes=yes)
+        _confirm("Restore user", email, yes=yes, dry_run=dry_run)
         data = set_admin_user_suspended(
             email=email, suspended=False, dry_run=dry_run, config=ctx.obj["config"]
         )
@@ -993,7 +1000,7 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
-        _confirm(f"Move {email} to", org_unit, yes=yes)
+        _confirm(f"Move {email} to", org_unit, yes=yes, dry_run=dry_run)
         data = move_admin_user(
             email=email, org_unit=org_unit, dry_run=dry_run, config=ctx.obj["config"]
         )
@@ -1015,7 +1022,7 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
-        _confirm(f"Add {member} to", group_email, yes=yes)
+        _confirm(f"Add {member} to", group_email, yes=yes, dry_run=dry_run)
         data = add_admin_group_member(
             group=group_email, member=member, role=role, dry_run=dry_run, config=ctx.obj["config"]
         )
@@ -1035,7 +1042,7 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
-        _confirm(f"Remove {member} from", group_email, yes=yes)
+        _confirm(f"Remove {member} from", group_email, yes=yes, dry_run=dry_run)
         data = remove_admin_group_member(
             group=group_email, member=member, dry_run=dry_run, config=ctx.obj["config"]
         )
@@ -1169,7 +1176,7 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
-        _confirm("Rename", email, yes=yes)
+        _confirm("Rename", email, yes=yes, dry_run=dry_run)
         data = rename_admin_user(
             email=email,
             first_name=first_name,
@@ -1193,7 +1200,7 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
-        _confirm("Reset the password of", email, yes=yes)
+        _confirm("Reset the password of", email, yes=yes, dry_run=dry_run)
         data = reset_admin_user_password(
             email=email, password=password, dry_run=dry_run, config=ctx.obj["config"]
         )
@@ -1213,7 +1220,12 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
-        _confirm("Grant super admin to" if grant else "Revoke super admin from", email, yes=yes)
+        _confirm(
+            "Grant super admin to" if grant else "Revoke super admin from",
+            email,
+            yes=yes,
+            dry_run=dry_run,
+        )
         data = set_admin_user_admin(
             email=email, grant=grant, dry_run=dry_run, config=ctx.obj["config"]
         )
@@ -1235,7 +1247,7 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
-        _confirm("Create group", group_email, yes=yes)
+        _confirm("Create group", group_email, yes=yes, dry_run=dry_run)
         data = create_admin_group(
             email=group_email,
             name=name,
@@ -1285,7 +1297,7 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
-        _confirm(f"Create org unit {name} under", parent, yes=yes)
+        _confirm(f"Create org unit {name} under", parent, yes=yes, dry_run=dry_run)
         data = create_admin_orgunit(
             name=name, parent=parent, dry_run=dry_run, config=ctx.obj["config"]
         )
