@@ -11,15 +11,23 @@ from gw.config import GWConfig
 from gw.services.admin import (
     add_admin_group_member,
     admin_whoami,
+    create_admin_group,
+    create_admin_orgunit,
     create_admin_user,
+    get_admin_user,
     list_admin_chromeos,
+    list_admin_group_members,
     list_admin_groups,
     list_admin_mobile,
     list_admin_orgunits,
+    list_admin_reports,
+    list_admin_roles,
     list_admin_telemetry,
     list_admin_users,
     move_admin_user,
     remove_admin_group_member,
+    rename_admin_user,
+    set_admin_user_admin,
     set_admin_user_suspended,
 )
 from gw.services.calendar import (
@@ -592,6 +600,60 @@ def admin_group_add(group: str, member: str, role: str = "MEMBER", dry_run: bool
 def admin_group_remove(group: str, member: str, dry_run: bool = True) -> dict:
     """Remove a member from a group. Defaults to dry_run=True."""
     return remove_admin_group_member(group=group, member=member, dry_run=dry_run, config=_config())
+
+
+@mcp_server.tool()
+def admin_user_get(email: str) -> dict:
+    """One user's record: org unit, admin flag, suspension, last login."""
+    return get_admin_user(email, config=_config())
+
+
+@mcp_server.tool()
+def admin_group_members(group: str, limit: int = 0) -> list:
+    """Who is in a group, with each member's role."""
+    return list_admin_group_members(group, limit=limit, config=_config())
+
+
+@mcp_server.tool()
+def admin_roles() -> list:
+    """Who holds which admin role, with the role name joined onto the assignment."""
+    return list_admin_roles(config=_config())
+
+
+@mcp_server.tool()
+def admin_reports(app: str = "login", limit: int = 0) -> list:
+    """Audit activity: login, admin, drive, token, groups, mobile, user_accounts."""
+    return list_admin_reports(app=app, limit=limit, config=_config())
+
+
+@mcp_server.tool()
+def admin_user_rename(email: str, first_name: str, last_name: str, dry_run: bool = True) -> dict:
+    """Change a user's display name. Defaults to dry_run=True."""
+    return rename_admin_user(
+        email=email, first_name=first_name, last_name=last_name, dry_run=dry_run, config=_config()
+    )
+
+
+@mcp_server.tool()
+def admin_user_set_admin(email: str, grant: bool, dry_run: bool = True) -> dict:
+    """Grant or revoke super admin. Reversible by calling again with the opposite grant."""
+    return set_admin_user_admin(email=email, grant=grant, dry_run=dry_run, config=_config())
+
+
+@mcp_server.tool()
+def admin_group_create(
+    email: str, name: str, description: str | None = None, dry_run: bool = True
+) -> dict:
+    """Create a group. Defaults to dry_run=True."""
+    return create_admin_group(
+        email=email, name=name, description=description, dry_run=dry_run, config=_config()
+    )
+
+
+@mcp_server.tool()
+def admin_orgunit_create(name: str, parent: str = "/", dry_run: bool = True) -> dict:
+    """Create an org unit under `parent`. Defaults to dry_run=True."""
+    return create_admin_orgunit(name=name, parent=parent, dry_run=dry_run, config=_config())
 
 
 def run_mcp_server() -> None:

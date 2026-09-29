@@ -648,11 +648,291 @@ def test_device_action_refuses_a_serial_that_does_not_match(mock_build_service: 
     service.chromeosdevices.return_value.action.assert_not_called()
 
 
-def test_write_scopes_are_the_broad_ones():
-    """Read-only scopes cannot perform a write; the write list must not quietly be readonly."""
+def test_write_scopes_grant_write_on_every_mutable_resource():
+    """A `.readonly` scope cannot perform a write, so each mutated resource needs the broad one.
+
+    `ADMIN_WRITE_SCOPES` also carries three deliberately read-only entries — telemetry,
+    role management and audit — because granting the whole Directory does not imply them.
+    The invariant is per-resource, not "nothing here says readonly".
+    """
     from gw.auth import ADMIN_SCOPES, ADMIN_WRITE_SCOPES
 
     assert all(scope.endswith(".readonly") for scope in ADMIN_SCOPES)
-    directory_writes = [s for s in ADMIN_WRITE_SCOPES if "admin.directory" in s]
-    assert directory_writes
-    assert not any(scope.endswith(".readonly") for scope in directory_writes)
+
+    mutated = ("user", "group", "orgunit", "device.chromeos")
+    for resource in mutated:
+        broad = f"https://www.googleapis.com/auth/admin.directory.{resource}"
+        assert broad in ADMIN_WRITE_SCOPES, resource
+
+    # Mobile writes go through the `.action` scope, not a bare broad one.
+    assert (
+        "https://www.googleapis.com/auth/admin.directory.device.mobile.action"
+        in ADMIN_WRITE_SCOPES
+    )
+
+
+# --------------------------------------------------------------------------- completude
+#
+# Victor, 29/09 12:35: "me parece incompleto e eu quero a feature completa". Gerir um
+# domínio é o ciclo de vida inteiro — onboarding, offboarding, grupos, unidades
+# organizacionais, quem é admin, e o registo de quem fez o quê.
+
+
+@patch("gw.services.admin.build_service")
+def test_user_get_returns_one_user(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.get.return_value = _mock_execute(
+        {"primaryEmail": "a@x.com", "isAdmin": False, "orgUnitPath": "/Ops", "id": "1"}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["admin", "user", "a@x.com", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["org_unit_path"] == "/Ops"
+
+
+@patch("gw.services.admin.build_service")
+def test_group_members_pages(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.members.return_value.list = _paged(
+        {"members": [{"email": "a@x.com", "role": "MEMBER", "id": "1"}], "nextPageToken": "p2"},
+        {"members": [{"email": "b@x.com", "role": "MANAGER", "id": "2"}]},
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["admin", "group-members", "ops@x.com", "--json"])
+
+    assert result.exit_code == 0
+    rows = json.loads(result.output)
+    assert [row["email"] for row in rows] == ["a@x.com", "b@x.com"]
+    assert rows[1]["role"] == "MANAGER"
+
+
+@patch("gw.services.admin.build_service")
+def test_roles_lists_assignments_with_the_role_name(mock_build_service: MagicMock):
+    """A role id in a report tells nobody anything; the answer is "who is an admin"."""
+    service = MagicMock()
+    service.roles.return_value.list = _paged(
+        {"items": [{"roleId": "r1", "roleName": "_SEED_ADMIN_ROLE", "isSuperAdminRole": True}]}
+    )
+    service.roleAssignments.return_value.list = _paged(
+        {"items": [{"roleId": "r1", "assignedTo": "u1", "scopeType": "CUSTOMER"}]}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["admin", "roles", "--json"])
+
+    assert result.exit_code == 0
+    row = json.loads(result.output)[0]
+    assert row["role_name"] == "_SEED_ADMIN_ROLE"
+    assert row["is_super_admin"] is True
+    assert row["assigned_to"] == "u1"
+
+
+@patch("gw.services.admin.build_service")
+def test_reports_uses_the_reports_api_not_directory(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.activities.return_value.list = _paged(
+        {
+            "items": [
+                {
+                    "id": {"time": "2026-09-29T08:00:00.000Z"},
+                    "actor": {"email": "a@x.com"},
+                    "events": [{"name": "login_success", "type": "login"}],
+                    "ipAddress": "1.2.3.4",
+                }
+            ]
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["admin", "reports", "--app", "login", "--json"])
+
+    assert result.exit_code == 0
+    assert mock_build_service.call_args.args == ("admin", "reports_v1")
+    row = json.loads(result.output)[0]
+    assert row["actor"] == "a@x.com"
+    assert row["event"] == "login_success"
+    assert service.activities.return_value.list.call_args.kwargs["applicationName"] == "login"
+
+
+@patch("gw.services.admin.build_service")
+def test_user_delete_demands_the_email_retyped(mock_build_service: MagicMock):
+    """Deleting a user destroys their Drive and Gmail. --yes is not enough."""
+    service = MagicMock()
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["admin", "user-delete", "a@x.com", "--yes", "--json"])
+
+    assert result.exit_code != 0
+    service.users.return_value.delete.assert_not_called()
+
+
+@patch("gw.services.admin.build_service")
+def test_user_delete_runs_when_the_email_matches(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.delete.return_value = _mock_execute({})
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main, ["admin", "user-delete", "a@x.com", "--confirm-email", "a@x.com", "--json"]
+    )
+
+    assert result.exit_code == 0
+    assert service.users.return_value.delete.call_args.kwargs["userKey"] == "a@x.com"
+
+
+@patch("gw.services.admin.build_service")
+def test_user_delete_refuses_a_mismatched_email(mock_build_service: MagicMock):
+    service = MagicMock()
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main, ["admin", "user-delete", "a@x.com", "--confirm-email", "b@x.com", "--json"]
+    )
+
+    assert result.exit_code != 0
+    service.users.return_value.delete.assert_not_called()
+
+
+@patch("gw.services.admin.build_service")
+def test_user_rename_and_password_reset(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.users.return_value.update.return_value = _mock_execute({"primaryEmail": "a@x.com"})
+    mock_build_service.return_value = service
+
+    renamed = runner.invoke(
+        main,
+        [
+            "admin",
+            "user-rename",
+            "a@x.com",
+            "--first-name",
+            "Ana",
+            "--last-name",
+            "Silva",
+            "--yes",
+            "--json",
+        ],
+    )
+    assert renamed.exit_code == 0
+    assert service.users.return_value.update.call_args.kwargs["body"]["name"] == {
+        "givenName": "Ana",
+        "familyName": "Silva",
+    }
+
+    reset = runner.invoke(
+        main, ["admin", "user-password", "a@x.com", "--password", "n0va-temp", "--yes", "--json"]
+    )
+    assert reset.exit_code == 0
+    body = service.users.return_value.update.call_args.kwargs["body"]
+    assert body["password"] == "n0va-temp"
+    assert body["changePasswordAtNextLogin"] is True
+    assert "n0va-temp" not in reset.output
+
+
+@patch("gw.services.admin.build_service")
+def test_make_admin_uses_the_dedicated_endpoint(mock_build_service: MagicMock):
+    """users.makeAdmin, not users.update — isAdmin is read-only on the user resource."""
+    service = MagicMock()
+    service.users.return_value.makeAdmin.return_value = _mock_execute({})
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["admin", "user-admin", "a@x.com", "--grant", "--yes", "--json"])
+
+    assert result.exit_code == 0
+    kwargs = service.users.return_value.makeAdmin.call_args.kwargs
+    assert kwargs["userKey"] == "a@x.com"
+    assert kwargs["body"] == {"status": True}
+
+
+@patch("gw.services.admin.build_service")
+def test_group_create_and_delete(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.groups.return_value.insert.return_value = _mock_execute(
+        {"email": "novo@x.com", "name": "Novo", "id": "g9"}
+    )
+    service.groups.return_value.delete.return_value = _mock_execute({})
+    mock_build_service.return_value = service
+
+    created = runner.invoke(
+        main, ["admin", "group-create", "novo@x.com", "--name", "Novo", "--yes", "--json"]
+    )
+    assert created.exit_code == 0
+    assert service.groups.return_value.insert.call_args.kwargs["body"]["email"] == "novo@x.com"
+
+    # Deleting a group is destructive: the membership list is gone.
+    blocked = runner.invoke(main, ["admin", "group-delete", "novo@x.com", "--yes", "--json"])
+    assert blocked.exit_code != 0
+    service.groups.return_value.delete.assert_not_called()
+
+    deleted = runner.invoke(
+        main, ["admin", "group-delete", "novo@x.com", "--confirm-email", "novo@x.com", "--json"]
+    )
+    assert deleted.exit_code == 0
+
+
+@patch("gw.services.admin.build_service")
+def test_orgunit_create_and_delete(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.orgunits.return_value.insert.return_value = _mock_execute(
+        {"name": "Loja", "orgUnitPath": "/Ops/Loja", "orgUnitId": "o9"}
+    )
+    service.orgunits.return_value.delete.return_value = _mock_execute({})
+    mock_build_service.return_value = service
+
+    created = runner.invoke(
+        main, ["admin", "orgunit-create", "Loja", "--parent", "/Ops", "--yes", "--json"]
+    )
+    assert created.exit_code == 0
+    body = service.orgunits.return_value.insert.call_args.kwargs["body"]
+    assert body == {"name": "Loja", "parentOrgUnitPath": "/Ops"}
+
+    deleted = runner.invoke(
+        main, ["admin", "orgunit-delete", "/Ops/Loja", "--confirm-path", "/Ops/Loja", "--json"]
+    )
+    assert deleted.exit_code == 0
+    assert service.orgunits.return_value.delete.call_args.kwargs["orgUnitPath"] == "/Ops/Loja"
+
+
+@patch("gw.services.admin.build_service")
+def test_mobile_action_requires_the_serial(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.mobiledevices.return_value.get.return_value = _mock_execute({"serialNumber": "SN9"})
+    service.mobiledevices.return_value.action.return_value = _mock_execute({})
+    mock_build_service.return_value = service
+
+    blocked = runner.invoke(main, ["admin", "mobile-action", "m1", "admin_account_wipe", "--yes"])
+    assert blocked.exit_code != 0
+
+    ok = runner.invoke(
+        main,
+        [
+            "admin",
+            "mobile-action",
+            "m1",
+            "admin_account_wipe",
+            "--confirm-serial",
+            "SN9",
+            "--json",
+        ],
+    )
+    assert ok.exit_code == 0
+    assert service.mobiledevices.return_value.action.call_args.kwargs["body"] == {
+        "action": "admin_account_wipe"
+    }
+
+
+def test_every_destructive_command_refuses_yes_alone():
+    """The rail scales with the blast radius: irreversible commands need the name retyped."""
+    irreversible = {
+        "user-delete": "--confirm-email",
+        "group-delete": "--confirm-email",
+        "orgunit-delete": "--confirm-path",
+        "device-action": "--confirm-serial",
+        "mobile-action": "--confirm-serial",
+    }
+    for command, flag in irreversible.items():
+        help_text = runner.invoke(main, ["admin", command, "--help"]).output
+        assert flag in help_text, command

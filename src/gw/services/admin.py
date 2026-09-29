@@ -46,6 +46,11 @@ def _chrome_service(config: GWConfig | None = None):
     return build_service("chromemanagement", "v1", config=config)
 
 
+def _reports_service(config: GWConfig | None = None):
+    """Audit and usage live in `reports_v1`, a different version of the same `admin` API."""
+    return build_service("admin", "reports_v1", config=config)
+
+
 def _paginate(
     list_method: Callable[..., Any],
     *,
@@ -475,6 +480,281 @@ def act_on_chromeos_device(
     return {"deviceId": device_id, "serialNumber": actual_serial, "action": action}
 
 
+# --------------------------------------------------------------------------- lifecycle
+#
+# Everything below closes the loop from "who is in this domain" to "manage this domain":
+# one user, a group's membership, who holds an admin role, and what people actually did.
+
+
+def get_admin_user(email: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = _directory_service(config)
+    return _normalize_user(execute_google_request(service.users().get(userKey=email)))
+
+
+def _normalize_member(member: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": member.get("id"),
+        "email": member.get("email"),
+        "role": member.get("role"),
+        "type": member.get("type"),
+        "status": member.get("status"),
+    }
+
+
+def list_admin_group_members(
+    group: str, limit: int = 0, config: GWConfig | None = None
+) -> list[dict[str, Any]]:
+    service = _directory_service(config)
+    rows = _paginate(
+        service.members().list,
+        items_key="members",
+        limit=limit,
+        page_size=200,
+        groupKey=group,
+    )
+    return [_normalize_member(row) for row in rows]
+
+
+def list_admin_roles(config: GWConfig | None = None) -> list[dict[str, Any]]:
+    """Join assignments onto role names: a bare roleId answers nobody's question."""
+    service = _directory_service(config)
+    roles = {
+        role.get("roleId"): role
+        for role in _paginate(
+            service.roles().list, items_key="items", page_size=100, customer=CUSTOMER
+        )
+    }
+    assignments = _paginate(
+        service.roleAssignments().list, items_key="items", page_size=100, customer=CUSTOMER
+    )
+    return [
+        {
+            "role_id": assignment.get("roleId"),
+            "role_name": (roles.get(assignment.get("roleId")) or {}).get("roleName"),
+            "is_super_admin": bool(
+                (roles.get(assignment.get("roleId")) or {}).get("isSuperAdminRole", False)
+            ),
+            "assigned_to": assignment.get("assignedTo"),
+            "scope_type": assignment.get("scopeType"),
+            "org_unit_id": assignment.get("orgUnitId"),
+        }
+        for assignment in assignments
+    ]
+
+
+REPORT_APPS = ("login", "admin", "drive", "token", "groups", "mobile", "user_accounts")
+
+
+def _normalize_activity(activity: dict[str, Any]) -> dict[str, Any]:
+    events = activity.get("events") or []
+    first = events[0] if events else {}
+    return {
+        "time": (activity.get("id") or {}).get("time"),
+        "actor": (activity.get("actor") or {}).get("email"),
+        "event": first.get("name"),
+        "type": first.get("type"),
+        "ip_address": activity.get("ipAddress"),
+    }
+
+
+def list_admin_reports(
+    app: str = "login",
+    limit: int = 0,
+    config: GWConfig | None = None,
+) -> list[dict[str, Any]]:
+    service = _reports_service(config)
+    rows = _paginate(
+        service.activities().list,
+        items_key="items",
+        limit=limit,
+        page_size=1000,
+        userKey="all",
+        applicationName=app,
+    )
+    return [_normalize_activity(row) for row in rows]
+
+
+def _require_match(kind: str, typed: str | None, actual: str | None, what: str) -> None:
+    """Irreversible commands take the name retyped, never a bare --yes."""
+    if not typed:
+        raise click.UsageError(
+            f"{what} requires --confirm-{kind}: retype the {kind} of what you mean. "
+            "--yes does not cover an irreversible command."
+        )
+    if typed != actual:
+        raise GwError(
+            f"{kind.capitalize()} mismatch: target reports {actual!r}, you typed {typed!r}. "
+            "Nothing was done."
+        )
+
+
+def delete_admin_user(
+    email: str,
+    confirm_email: str | None,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Deleting a user destroys their Drive and Gmail. Transfer first, then delete."""
+    _require_match("email", confirm_email, email, "user-delete")
+    if dry_run:
+        return {"dry_run": True, "would_call": "users.delete", "userKey": email}
+
+    service = _directory_service(config)
+    execute_google_request(service.users().delete(userKey=email))
+    return {"deleted": email}
+
+
+def rename_admin_user(
+    email: str,
+    first_name: str,
+    last_name: str,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    body = {"name": {"givenName": first_name, "familyName": last_name}}
+    if dry_run:
+        return {"dry_run": True, "would_call": "users.update", "userKey": email, "body": body}
+
+    service = _directory_service(config)
+    return _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+
+
+def reset_admin_user_password(
+    email: str,
+    password: str,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    body = {"password": password, "changePasswordAtNextLogin": True}
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_call": "users.update",
+            "userKey": email,
+            "body": _redact(body),
+        }
+
+    service = _directory_service(config)
+    return _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+
+
+def set_admin_user_admin(
+    email: str,
+    grant: bool,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """`isAdmin` is read-only on the user resource; the grant goes through users.makeAdmin."""
+    body = {"status": grant}
+    if dry_run:
+        return {"dry_run": True, "would_call": "users.makeAdmin", "userKey": email, "body": body}
+
+    service = _directory_service(config)
+    execute_google_request(service.users().makeAdmin(userKey=email, body=body))
+    return {"email": email, "is_admin": grant}
+
+
+def create_admin_group(
+    email: str,
+    name: str,
+    description: str | None = None,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"email": email, "name": name}
+    if description:
+        body["description"] = description
+    if dry_run:
+        return {"dry_run": True, "would_call": "groups.insert", "body": body}
+
+    service = _directory_service(config)
+    return _normalize_group(execute_google_request(service.groups().insert(body=body)))
+
+
+def delete_admin_group(
+    email: str,
+    confirm_email: str | None,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """The membership list goes with it, and no API brings it back."""
+    _require_match("email", confirm_email, email, "group-delete")
+    if dry_run:
+        return {"dry_run": True, "would_call": "groups.delete", "groupKey": email}
+
+    service = _directory_service(config)
+    execute_google_request(service.groups().delete(groupKey=email))
+    return {"deleted": email}
+
+
+def create_admin_orgunit(
+    name: str,
+    parent: str = "/",
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    body = {"name": name, "parentOrgUnitPath": parent}
+    if dry_run:
+        return {"dry_run": True, "would_call": "orgunits.insert", "body": body}
+
+    service = _directory_service(config)
+    return _normalize_orgunit(
+        execute_google_request(service.orgunits().insert(customerId=CUSTOMER, body=body))
+    )
+
+
+def delete_admin_orgunit(
+    path: str,
+    confirm_path: str | None,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    _require_match("path", confirm_path, path, "orgunit-delete")
+    if dry_run:
+        return {"dry_run": True, "would_call": "orgunits.delete", "orgUnitPath": path}
+
+    service = _directory_service(config)
+    execute_google_request(service.orgunits().delete(customerId=CUSTOMER, orgUnitPath=path))
+    return {"deleted": path}
+
+
+MOBILE_ACTIONS = (
+    "admin_account_wipe",
+    "admin_remote_wipe",
+    "approve",
+    "block",
+    "cancel_remote_wipe_then_activate",
+)
+
+
+def act_on_mobile_device(
+    resource_id: str,
+    action: str,
+    confirm_serial: str | None,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    service = _directory_service(config)
+    device = execute_google_request(
+        service.mobiledevices().get(customerId=CUSTOMER, resourceId=resource_id)
+    )
+    _require_match("serial", confirm_serial, device.get("serialNumber"), "mobile-action")
+
+    body = {"action": action}
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_call": "mobiledevices.action",
+            "resourceId": resource_id,
+            "body": body,
+        }
+
+    execute_google_request(
+        service.mobiledevices().action(customerId=CUSTOMER, resourceId=resource_id, body=body)
+    )
+    return {"resourceId": resource_id, "action": action}
+
+
 # --------------------------------------------------------------------------- CLI
 
 
@@ -794,3 +1074,271 @@ def register_admin_commands(group: click.Group) -> None:
             config=ctx.obj["config"],
         )
         _emit_one(ctx, json_output, data, f"{action} sent to {device_id}")
+
+    # ----------------------------------------------------------------- lifecycle reads
+
+    @group.command("user")
+    @click.argument("email")
+    @json_option
+    @click.pass_context
+    def user_command(ctx: click.Context, email: str, json_output: bool | None) -> None:
+        data = get_admin_user(email, config=ctx.obj["config"])
+        _emit_one(ctx, json_output, data, f"{data['email']}  {data.get('org_unit_path')}")
+
+    @group.command("group-members")
+    @click.argument("group_email")
+    @_limit_option
+    @json_option
+    @click.pass_context
+    def group_members_command(
+        ctx: click.Context, group_email: str, limit: int, json_output: bool | None
+    ) -> None:
+        rows = list_admin_group_members(group_email, limit=limit, config=ctx.obj["config"])
+        _emit(ctx, json_output, rows, lambda row: f"{row['email']}  {row.get('role')}")
+
+    @group.command("roles")
+    @json_option
+    @click.pass_context
+    def roles_command(ctx: click.Context, json_output: bool | None) -> None:
+        rows = list_admin_roles(config=ctx.obj["config"])
+        _emit(
+            ctx,
+            json_output,
+            rows,
+            lambda row: "{}  {}{}".format(
+                row.get("assigned_to"),
+                row.get("role_name"),
+                "  [super admin]" if row["is_super_admin"] else "",
+            ),
+        )
+
+    @group.command("reports")
+    @click.option("--app", default="login", type=click.Choice(REPORT_APPS), show_default=True)
+    @_limit_option
+    @json_option
+    @click.pass_context
+    def reports_command(
+        ctx: click.Context, app: str, limit: int, json_output: bool | None
+    ) -> None:
+        rows = list_admin_reports(app=app, limit=limit, config=ctx.obj["config"])
+        _emit(
+            ctx,
+            json_output,
+            rows,
+            lambda row: f"{row.get('time')}  {row.get('actor')}  {row.get('event')}",
+        )
+
+    # ----------------------------------------------------------------- lifecycle writes
+
+    @group.command("user-delete")
+    @click.argument("email")
+    @click.option(
+        "--confirm-email",
+        default=None,
+        help="The user's email, retyped. Required — deleting destroys their Drive and Gmail.",
+    )
+    @_write_options
+    @json_option
+    @click.pass_context
+    def user_delete_command(
+        ctx: click.Context,
+        email: str,
+        confirm_email: str | None,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        data = delete_admin_user(
+            email=email, confirm_email=confirm_email, dry_run=dry_run, config=ctx.obj["config"]
+        )
+        _emit_one(ctx, json_output, data, f"User deleted: {email}")
+
+    @group.command("user-rename")
+    @click.argument("email")
+    @click.option("--first-name", required=True)
+    @click.option("--last-name", required=True)
+    @_write_options
+    @json_option
+    @click.pass_context
+    def user_rename_command(
+        ctx: click.Context,
+        email: str,
+        first_name: str,
+        last_name: str,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        _confirm("Rename", email, yes=yes)
+        data = rename_admin_user(
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+            dry_run=dry_run,
+            config=ctx.obj["config"],
+        )
+        _emit_one(ctx, json_output, data, f"User renamed: {email}")
+
+    @group.command("user-password")
+    @click.argument("email")
+    @click.option("--password", required=True, help="Temporary; changed at next login.")
+    @_write_options
+    @json_option
+    @click.pass_context
+    def user_password_command(
+        ctx: click.Context,
+        email: str,
+        password: str,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        _confirm("Reset the password of", email, yes=yes)
+        data = reset_admin_user_password(
+            email=email, password=password, dry_run=dry_run, config=ctx.obj["config"]
+        )
+        _emit_one(ctx, json_output, data, f"Password reset: {email}")
+
+    @group.command("user-admin")
+    @click.argument("email")
+    @click.option("--grant/--revoke", "grant", default=None, required=True)
+    @_write_options
+    @json_option
+    @click.pass_context
+    def user_admin_command(
+        ctx: click.Context,
+        email: str,
+        grant: bool,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        _confirm("Grant super admin to" if grant else "Revoke super admin from", email, yes=yes)
+        data = set_admin_user_admin(
+            email=email, grant=grant, dry_run=dry_run, config=ctx.obj["config"]
+        )
+        _emit_one(ctx, json_output, data, f"Admin {'granted' if grant else 'revoked'}: {email}")
+
+    @group.command("group-create")
+    @click.argument("group_email")
+    @click.option("--name", required=True)
+    @click.option("--description", default=None)
+    @_write_options
+    @json_option
+    @click.pass_context
+    def group_create_command(
+        ctx: click.Context,
+        group_email: str,
+        name: str,
+        description: str | None,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        _confirm("Create group", group_email, yes=yes)
+        data = create_admin_group(
+            email=group_email,
+            name=name,
+            description=description,
+            dry_run=dry_run,
+            config=ctx.obj["config"],
+        )
+        _emit_one(ctx, json_output, data, f"Group created: {group_email}")
+
+    @group.command("group-delete")
+    @click.argument("group_email")
+    @click.option(
+        "--confirm-email",
+        default=None,
+        help="The group's email, retyped. Required — the membership list does not come back.",
+    )
+    @_write_options
+    @json_option
+    @click.pass_context
+    def group_delete_command(
+        ctx: click.Context,
+        group_email: str,
+        confirm_email: str | None,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        data = delete_admin_group(
+            email=group_email,
+            confirm_email=confirm_email,
+            dry_run=dry_run,
+            config=ctx.obj["config"],
+        )
+        _emit_one(ctx, json_output, data, f"Group deleted: {group_email}")
+
+    @group.command("orgunit-create")
+    @click.argument("name")
+    @click.option("--parent", default="/", show_default=True, help="Parent org unit path.")
+    @_write_options
+    @json_option
+    @click.pass_context
+    def orgunit_create_command(
+        ctx: click.Context,
+        name: str,
+        parent: str,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        _confirm(f"Create org unit {name} under", parent, yes=yes)
+        data = create_admin_orgunit(
+            name=name, parent=parent, dry_run=dry_run, config=ctx.obj["config"]
+        )
+        _emit_one(ctx, json_output, data, f"Org unit created: {data.get('path', name)}")
+
+    @group.command("orgunit-delete")
+    @click.argument("path")
+    @click.option(
+        "--confirm-path",
+        default=None,
+        help="The org unit path, retyped. Required — deleting an org unit is irreversible.",
+    )
+    @_write_options
+    @json_option
+    @click.pass_context
+    def orgunit_delete_command(
+        ctx: click.Context,
+        path: str,
+        confirm_path: str | None,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        data = delete_admin_orgunit(
+            path=path, confirm_path=confirm_path, dry_run=dry_run, config=ctx.obj["config"]
+        )
+        _emit_one(ctx, json_output, data, f"Org unit deleted: {path}")
+
+    @group.command("mobile-action")
+    @click.argument("resource_id")
+    @click.argument("action", type=click.Choice(MOBILE_ACTIONS))
+    @click.option(
+        "--confirm-serial",
+        default=None,
+        help="The device's serial, retyped. Required — a wipe has no undo.",
+    )
+    @_write_options
+    @json_option
+    @click.pass_context
+    def mobile_action_command(
+        ctx: click.Context,
+        resource_id: str,
+        action: str,
+        confirm_serial: str | None,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        data = act_on_mobile_device(
+            resource_id=resource_id,
+            action=action,
+            confirm_serial=confirm_serial,
+            dry_run=dry_run,
+            config=ctx.obj["config"],
+        )
+        _emit_one(ctx, json_output, data, f"{action} sent to {resource_id}")

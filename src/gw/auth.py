@@ -61,6 +61,10 @@ ADMIN_SCOPES = [
     "https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly",
     "https://www.googleapis.com/auth/admin.directory.device.mobile.readonly",
     "https://www.googleapis.com/auth/chrome.management.telemetry.readonly",
+    # Quem é admin, e o que as pessoas fizeram. Sem estes dois, `admin roles` e
+    # `admin reports` respondem 403 com os outros seis concedidos.
+    "https://www.googleapis.com/auth/admin.directory.rolemanagement.readonly",
+    "https://www.googleapis.com/auth/admin.reports.audit.readonly",
 ]
 
 # Administração com escrita. Cada um destes substitui o `.readonly` correspondente — o
@@ -73,7 +77,11 @@ ADMIN_WRITE_SCOPES = [
     "https://www.googleapis.com/auth/admin.directory.orgunit",
     "https://www.googleapis.com/auth/admin.directory.device.chromeos",
     "https://www.googleapis.com/auth/admin.directory.device.mobile.action",
+    # Leitura que a escrita não implica: telemetria, papéis e auditoria continuam
+    # a precisar do scope próprio mesmo com o Directory inteiro concedido.
     "https://www.googleapis.com/auth/chrome.management.telemetry.readonly",
+    "https://www.googleapis.com/auth/admin.directory.rolemanagement.readonly",
+    "https://www.googleapis.com/auth/admin.reports.audit.readonly",
 ]
 
 
