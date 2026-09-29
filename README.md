@@ -6,7 +6,8 @@
 
 <p align="center">
   <strong>Google Workspace in your terminal.</strong><br/>
-  Gmail, Calendar, Contacts, Drive, Sheets, Docs, Tasks, Meet — one CLI. Permanent OAuth. Zero bloat.
+  Gmail, Calendar, Contacts, Drive, Sheets, Docs, Tasks, Meet — and the domain itself. One CLI.<br/>
+  Permanent OAuth. Zero bloat.
 </p>
 
 <p align="center">
@@ -22,6 +23,8 @@
 Every Google Workspace tool is either calendar-only, admin-only, or abandoned. No single CLI covers Gmail + Calendar + Contacts + Drive + Sheets + Docs with permanent OAuth.
 
 `gw` fixes that. Login once, use forever. No re-auth loops, first-class JSON output, and profile-aware config when you need multiple accounts.
+
+Since v0.9.0 it also administers the domain: 31 commands under `gw admin` that read the inventory and manage it — create a user with their full directory profile, move a leaver's Drive to whoever stays, then delete the account. The Admin Console does all of this too, in a browser, one click at a time.
 
 ## Install
 
@@ -254,7 +257,69 @@ gw docs list
 gw docs read DOCUMENT_ID
 gw docs export DOCUMENT_ID --format txt
 
+gw admin whoami
+gw admin users --limit 1000 --json
+gw admin user someone@yourdomain.com
+gw admin user someone@yourdomain.com --raw
+gw admin user-create new@yourdomain.com --first-name New --last-name Person \
+  --password 'Temp!1234' --org-unit "/Sales" --title "Store Manager" \
+  --department Sales --phone "+351900000000" --recovery-email personal@gmail.com
+gw admin user-suspend someone@yourdomain.com --dry-run
+gw admin transfer-apps
+gw admin user-delete leaver@yourdomain.com \
+  --confirm-email leaver@yourdomain.com --transfer-to stays@yourdomain.com
+
 gw mcp serve
+```
+
+## Workspace Administration
+
+`gw admin` covers the domain: 31 commands, 14 of them read-only. It needs its own consent
+(`gw auth login --admin` for reading, `--admin-write` to manage) and a super-admin role on
+the domain — the scopes are deliberately separate from the personal ones, so granting them
+cannot disturb an existing login.
+
+```bash
+gw auth login --admin-write        # consent once, per profile
+gw admin whoami                    # which APIs actually answer; exits non-zero if any denied
+```
+
+### Three rails, because writing to a domain has no undo
+
+**`--dry-run` prints the exact body that would be sent**, on screen and not only under
+`--json`. Passwords appear as `"***"` — the field shows, the value never does.
+
+**`--yes` skips the confirmation prompt** on reversible writes.
+
+**Five commands ignore `--yes` and demand the target retyped**: `user-delete`,
+`group-delete`, `orgunit-delete`, `device-action`, `mobile-action`. They accept `--yes` so
+existing scripts keep parsing, and their help says it is ignored — an inert flag advertised
+as a safety step is worse than no flag.
+
+### Offboarding without destroying the data
+
+Deleting a user destroys their Drive and Gmail. `--transfer-to` moves it first and **waits**:
+
+```bash
+gw admin transfer-apps                                   # what this domain can move
+gw admin user-delete leaver@corp.com \
+  --confirm-email leaver@corp.com --transfer-to manager@corp.com
+```
+
+The wait is the whole point. `transfers.insert` returns immediately with `inProgress` and
+the work runs afterwards, so deleting in that window destroys exactly what was being
+copied — silently, because `users.delete` succeeds anyway. Only `completed` authorises the
+deletion; any other state, including the `--transfer-timeout` expiring (900s by default),
+raises and leaves the account standing.
+
+Private data only by default. `--include-shared` also moves shared files, which rewrites
+permissions on other people's documents, so it is asked for and never inherited.
+
+Transfers are asynchronous, so they can be followed or used as a gate:
+
+```bash
+gw admin transfer-status TRANSFER_ID --wait   # exits non-zero until `completed`
+gw admin transfers --status completed --json
 ```
 
 ## Onboarding and Health Checks
@@ -304,6 +369,12 @@ Exposed tools:
 - `sheets_read`, `sheets_write`
 - `docs_read`, `docs_export`, `docs_list`
 - `tasks_lists`, `tasks_list`, `tasks_add`, `tasks_complete`, `tasks_delete`
+- `admin_users`, `admin_user_get`, `admin_groups`, `admin_group_members`, `admin_orgunits`, `admin_chromeos`, `admin_mobile`, `admin_telemetry`, `admin_roles`, `admin_reports`, `admin_check_access`
+- `admin_user_create`, `admin_user_suspend`, `admin_user_restore`, `admin_user_move`, `admin_user_rename`, `admin_user_set_admin`, `admin_group_add`, `admin_group_remove`, `admin_group_create`, `admin_orgunit_create`
+- `admin_transfer`, `admin_transfer_apps`, `admin_transfer_status`, `admin_transfers`
+
+The five irreversible commands are **not** exposed over MCP: deleting a user, a group or an
+org unit, and wiping a device, stay on the CLI where the retyped confirmation lives.
 
 ## Exit Codes
 
@@ -337,5 +408,26 @@ gw requests the following Google API scopes during `gw auth login`:
 | `documents.readonly` | Read and export Docs |
 | `contacts.readonly` | Search and list contacts |
 | `userinfo.email` | Identify authenticated account |
+
+### Administration (`--admin` / `--admin-write`, opt-in)
+
+These are never granted to a normal login. They belong to a dedicated profile with its own
+token file, which is why adding them cannot re-consent an existing one.
+
+| Scope | Why |
+|-------|-----|
+| `admin.directory.user` | Read the directory; with `--admin-write`, create, suspend, move and delete users |
+| `admin.directory.group` | Read groups and membership; with write, manage them |
+| `admin.directory.orgunit` | Read the org unit tree; with write, create and delete |
+| `admin.directory.device.chromeos` | ChromeOS inventory; with write, device actions |
+| `admin.directory.device.mobile` | Mobile inventory; with write, `.action` for block and wipe |
+| `admin.directory.rolemanagement.readonly` | Who holds which admin role |
+| `admin.reports.audit.readonly` | What people actually did |
+| `chrome.management.telemetry.readonly` | Device telemetry |
+| **`admin.datatransfer`** | Move a leaving user's Drive and Calendar before deletion |
+
+`--admin` requests the `.readonly` variant of each; `--admin-write` replaces it with the
+broad scope. Google treats the broad one as a superset, so asking for both is redundant
+rather than additive.
 
 All scopes are the minimum required for each feature. You can review the exact scope list in `src/gw/auth.py`.
