@@ -1,3 +1,3 @@
 """Google Workspace CLI tool."""
 
-__version__ = "0.8.3"
+__version__ = "0.9.1"

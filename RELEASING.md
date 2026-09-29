@@ -11,9 +11,15 @@ for the version to exist as something a human can find.
 
 ## Checklist
 
-### 1. The version bump
-- Bump `version` in `pyproject.toml`.
+### 1. The version bump — **two files, not one**
+- Bump `version` in `pyproject.toml` (what Homebrew installs).
+- Bump `__version__` in `src/gw/__init__.py` (what `gw --version` answers).
 - Move the `CHANGELOG.md` entry from *Unreleased* to `## vX.Y.Z (YYYY-MM-DD)`.
+
+> Learned the hard way, again: v0.9.0 shipped with the two out of step. `brew info` said
+> 0.9.0, the binary said 0.8.3, and `brew test` failed — after the release was public,
+> because this checklist named only `pyproject.toml`. `tests/test_version.py` now fails
+> when they disagree, so the suite catches it before the tag does.
 
 ### 2. Tag it
 ```bash

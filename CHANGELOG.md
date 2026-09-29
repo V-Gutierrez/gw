@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.9.1 (2026-09-29)
+
+### Fixed
+- **`gw --version` respondia 0.8.3 numa instalação 0.9.0.** A versão vive em dois sítios —
+  `pyproject.toml`, que decide o que o Homebrew instala, e `src/gw/__init__.py`, que decide
+  o que o binário responde — e o ritual de release só mandava bumpar o primeiro. O
+  `brew test` apanhou-o depois de a v0.9.0 já estar publicada. `tests/test_version.py`
+  passa a reprovar quando os dois discordam, e o `RELEASING.md` nomeia os dois ficheiros.
+
 ## v0.9.0 (2026-09-29)
 
 Novo grupo `gw admin`: 27 comandos que leem **e gerem** o domínio Workspace.
