@@ -8,6 +8,15 @@ from mcp.server.fastmcp import FastMCP
 
 from gw.auth import _get_config
 from gw.config import GWConfig
+from gw.services.admin import (
+    admin_whoami,
+    list_admin_chromeos,
+    list_admin_groups,
+    list_admin_mobile,
+    list_admin_orgunits,
+    list_admin_telemetry,
+    list_admin_users,
+)
 from gw.services.calendar import (
     create_calendar_event,
     create_instant_meet,
@@ -464,6 +473,55 @@ def tasks_complete(task_id: str, list_id: str = "@default") -> dict:
 @mcp_server.tool()
 def tasks_delete(task_id: str, list_id: str = "@default") -> dict:
     return delete_task(task_id=task_id, list_id=list_id, config=_config())
+
+
+# --------------------------------------------------------------------------- admin
+#
+# Read-only by construction: the `admin` service exposes no mutating function, so there is
+# nothing here that could suspend a user or wipe a device by chat. `limit=0` means every
+# page, which is the point — a partial inventory reads like a complete one.
+
+
+@mcp_server.tool()
+def admin_users(query: str | None = None, org_unit: str | None = None, limit: int = 0) -> list:
+    """List Workspace users. `query` takes Directory API syntax, e.g. isSuspended=true."""
+    return list_admin_users(query=query, org_unit=org_unit, limit=limit, config=_config())
+
+
+@mcp_server.tool()
+def admin_groups(limit: int = 0) -> list:
+    """List Workspace groups with their direct member counts."""
+    return list_admin_groups(limit=limit, config=_config())
+
+
+@mcp_server.tool()
+def admin_orgunits() -> list:
+    """List the whole org unit tree."""
+    return list_admin_orgunits(config=_config())
+
+
+@mcp_server.tool()
+def admin_chromeos(limit: int = 0) -> list:
+    """List ChromeOS and managed Chrome devices: serial, status, last sync."""
+    return list_admin_chromeos(limit=limit, config=_config())
+
+
+@mcp_server.tool()
+def admin_mobile(limit: int = 0) -> list:
+    """List managed mobile devices: model, OS, owner."""
+    return list_admin_mobile(limit=limit, config=_config())
+
+
+@mcp_server.tool()
+def admin_telemetry(limit: int = 0) -> list:
+    """Device telemetry from Chrome Management: CPU model and total RAM per serial."""
+    return list_admin_telemetry(limit=limit, config=_config())
+
+
+@mcp_server.tool()
+def admin_check_access() -> dict:
+    """Probe each admin API and report which ones answer. Never raises on a denied API."""
+    return admin_whoami(config=_config())
 
 
 def run_mcp_server() -> None:

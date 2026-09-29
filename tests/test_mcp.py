@@ -17,6 +17,13 @@ def test_mcp_lists_expected_tools() -> None:
     tool_names = anyio.run(run)
 
     assert tool_names == [
+        "admin_check_access",
+        "admin_chromeos",
+        "admin_groups",
+        "admin_mobile",
+        "admin_orgunits",
+        "admin_telemetry",
+        "admin_users",
         "calendar_agenda",
         "calendar_create",
         "calendar_delete",

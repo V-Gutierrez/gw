@@ -78,6 +78,7 @@ DEFAULTS: dict[str, Any] = {
     "signature_address": None,
     "signature_cache_path": None,
     "signature_cache_ttl_seconds": DEFAULT_SIGNATURE_CACHE_TTL_SECONDS,
+    "scopes": None,
 }
 
 
@@ -93,6 +94,10 @@ class GWConfig:
     signature_address: str | None = DEFAULTS["signature_address"]
     signature_cache_path: str | None = DEFAULTS["signature_cache_path"]
     signature_cache_ttl_seconds: int = DEFAULTS["signature_cache_ttl_seconds"]
+    # The OAuth scopes this profile consents to. ``None`` means gw.auth.DEFAULT_SCOPES.
+    # Per-profile because each profile already has its own token file: an admin profile
+    # can consent to Directory API without widening — or re-consenting — any other.
+    scopes: list[str] | None = DEFAULTS["scopes"]
     _extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -118,6 +123,7 @@ class GWConfig:
             "signature_address": self.signature_address,
             "signature_cache_path": self.signature_cache_path,
             "signature_cache_ttl_seconds": self.signature_cache_ttl_seconds,
+            "scopes": self.scopes,
             **self._extra,
         }
         if self.profile is not None:
@@ -144,6 +150,7 @@ def _parse_known_values(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         "signature_address",
         "signature_cache_path",
         "signature_cache_ttl_seconds",
+        "scopes",
     }
     known = {key: value for key, value in data.items() if key in known_keys}
     extra = {key: value for key, value in data.items() if key not in known_keys}
@@ -157,6 +164,14 @@ def _parse_known_values(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         value = known.get(key)
         if key in known and value is not None and not isinstance(value, str):
             raise ValueError(f"Config value {key!r} must be a string or omitted.")
+
+    if "scopes" in known:
+        scopes_value = known["scopes"]
+        if scopes_value is not None and (
+            not isinstance(scopes_value, list)
+            or not all(isinstance(scope, str) for scope in scopes_value)
+        ):
+            raise ValueError("Config value 'scopes' must be a list of strings or omitted.")
 
     if "signature" in known and not isinstance(known["signature"], bool):
         raise ValueError("Config value 'signature' must be a boolean.")

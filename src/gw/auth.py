@@ -47,6 +47,22 @@ DEFAULT_SCOPES = [
     "openid",
 ]
 
+# Read-only Workspace administration. Deliberately a separate list from DEFAULT_SCOPES:
+# these are never handed to the personal, consi or controlspace profiles. They belong to a
+# dedicated profile with its own token file, which is why adding them cannot disturb —
+# or re-consent — any existing login.
+#
+# Every entry ends in `.readonly` and a test enforces it. Writing to a domain (suspend a
+# user, wipe a device) has no undo and is not part of this group.
+ADMIN_SCOPES = [
+    "https://www.googleapis.com/auth/admin.directory.user.readonly",
+    "https://www.googleapis.com/auth/admin.directory.group.readonly",
+    "https://www.googleapis.com/auth/admin.directory.orgunit.readonly",
+    "https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly",
+    "https://www.googleapis.com/auth/admin.directory.device.mobile.readonly",
+    "https://www.googleapis.com/auth/chrome.management.telemetry.readonly",
+]
+
 
 RETRY_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
@@ -324,8 +340,11 @@ def login(
     redirect URL or bare code and does the exchange in a separate invocation, so the two
     halves can happen in different places — or in a chat.
     """
-    target_scopes = scopes or DEFAULT_SCOPES
     cfg = config or _get_config()
+    # Precedence: explicit argument, then the profile's own list, then the built-in set.
+    # The profile layer is what lets `gw --profile csadmin auth login` ask for Directory
+    # API without touching the scopes of any other token.
+    target_scopes = scopes or getattr(cfg, "scopes", None) or DEFAULT_SCOPES
     secrets = client_secrets or cfg.credentials
     resolved_token = token_path or cfg.token
 
@@ -388,12 +407,13 @@ def credential_status(
 ) -> dict[str, Any]:
     cfg = config or _get_config()
     creds = credentials or load_credentials(config=cfg)
+    profile_scopes = getattr(cfg, "scopes", None) or DEFAULT_SCOPES
     return {
         "authenticated": bool(creds and creds.valid),
         "token_path": str(cfg.token),
         "credentials_path": str(cfg.credentials),
         "expiry": creds.expiry.isoformat() if creds and creds.expiry else None,
-        "scopes": list(creds.scopes or DEFAULT_SCOPES) if creds else DEFAULT_SCOPES,
+        "scopes": list(creds.scopes or profile_scopes) if creds else profile_scopes,
     }
 
 
