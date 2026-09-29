@@ -47,6 +47,43 @@ DEFAULT_SCOPES = [
     "openid",
 ]
 
+# Read-only Workspace administration. Deliberately a separate list from DEFAULT_SCOPES:
+# these are never handed to the personal, consi or controlspace profiles. They belong to a
+# dedicated profile with its own token file, which is why adding them cannot disturb —
+# or re-consent — any existing login.
+#
+# Every entry ends in `.readonly` and a test enforces it. Writing to a domain (suspend a
+# user, wipe a device) has no undo and is not part of this group.
+ADMIN_SCOPES = [
+    "https://www.googleapis.com/auth/admin.directory.user.readonly",
+    "https://www.googleapis.com/auth/admin.directory.group.readonly",
+    "https://www.googleapis.com/auth/admin.directory.orgunit.readonly",
+    "https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly",
+    "https://www.googleapis.com/auth/admin.directory.device.mobile.readonly",
+    "https://www.googleapis.com/auth/chrome.management.telemetry.readonly",
+    # Quem é admin, e o que as pessoas fizeram. Sem estes dois, `admin roles` e
+    # `admin reports` respondem 403 com os outros seis concedidos.
+    "https://www.googleapis.com/auth/admin.directory.rolemanagement.readonly",
+    "https://www.googleapis.com/auth/admin.reports.audit.readonly",
+]
+
+# Administração com escrita. Cada um destes substitui o `.readonly` correspondente — o
+# Google trata o scope amplo como superconjunto, por isso pedir os dois é redundante, não
+# aditivo. Separados de propósito: `--admin` concede leitura, `--admin-write` concede as
+# duas, e a diferença entre as duas flags é a diferença entre um engano e uma decisão.
+ADMIN_WRITE_SCOPES = [
+    "https://www.googleapis.com/auth/admin.directory.user",
+    "https://www.googleapis.com/auth/admin.directory.group",
+    "https://www.googleapis.com/auth/admin.directory.orgunit",
+    "https://www.googleapis.com/auth/admin.directory.device.chromeos",
+    "https://www.googleapis.com/auth/admin.directory.device.mobile.action",
+    # Leitura que a escrita não implica: telemetria, papéis e auditoria continuam
+    # a precisar do scope próprio mesmo com o Directory inteiro concedido.
+    "https://www.googleapis.com/auth/chrome.management.telemetry.readonly",
+    "https://www.googleapis.com/auth/admin.directory.rolemanagement.readonly",
+    "https://www.googleapis.com/auth/admin.reports.audit.readonly",
+]
+
 
 RETRY_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
@@ -324,18 +361,25 @@ def login(
     redirect URL or bare code and does the exchange in a separate invocation, so the two
     halves can happen in different places — or in a chat.
     """
-    target_scopes = scopes or DEFAULT_SCOPES
     cfg = config or _get_config()
+    # Precedence: explicit argument, then the profile's own list, then the built-in set.
+    # The profile layer is what lets `gw --profile csadmin auth login` ask for Directory
+    # API without touching the scopes of any other token.
+    requested = scopes or getattr(cfg, "scopes", None) or DEFAULT_SCOPES
     secrets = client_secrets or cfg.credentials
     resolved_token = token_path or cfg.token
 
     if not secrets.exists():
         raise GwConfigError(f"Credentials file not found: {secrets}")
 
+    already = granted_scopes(cfg, resolved_token)
+    # Consent REPLACES the token's scope list, so asking for exactly `requested` would strip
+    # everything the token already carries. A profile that gains admin scopes would silently
+    # lose gmail.send, calendar, drive and tasks — the 0.8.2 failure with a new face. Union,
+    # so re-consent can only ever add capability.
+    target_scopes = list(dict.fromkeys([*already, *requested]))
     existing = load_credentials(token_path=resolved_token, config=cfg)
-    missing = [
-        scope for scope in target_scopes if scope not in granted_scopes(cfg, resolved_token)
-    ]
+    missing = [scope for scope in requested if scope not in already]
     if existing and existing.valid and not missing:
         return existing
     if existing and existing.valid:
@@ -388,12 +432,13 @@ def credential_status(
 ) -> dict[str, Any]:
     cfg = config or _get_config()
     creds = credentials or load_credentials(config=cfg)
+    profile_scopes = getattr(cfg, "scopes", None) or DEFAULT_SCOPES
     return {
         "authenticated": bool(creds and creds.valid),
         "token_path": str(cfg.token),
         "credentials_path": str(cfg.credentials),
         "expiry": creds.expiry.isoformat() if creds and creds.expiry else None,
-        "scopes": list(creds.scopes or DEFAULT_SCOPES) if creds else DEFAULT_SCOPES,
+        "scopes": list(creds.scopes or profile_scopes) if creds else profile_scopes,
     }
 
 
@@ -467,6 +512,18 @@ def register_auth_commands(auth_group: click.Group) -> None:
         default=None,
         help="Redeem a pasted redirect URL (or bare code) instead of prompting for it.",
     )
+    @click.option(
+        "--admin",
+        "admin_mode",
+        is_flag=True,
+        help="Also consent to read-only Workspace administration (Directory, Chrome telemetry).",
+    )
+    @click.option(
+        "--admin-write",
+        "admin_write_mode",
+        is_flag=True,
+        help="Consent to administration that can CHANGE the domain: create, suspend, delete.",
+    )
     @json_option
     @click.pass_context
     def login_cmd(
@@ -475,10 +532,16 @@ def register_auth_commands(auth_group: click.Group) -> None:
         redirect_uri: str | None,
         url_only: bool,
         code: str | None,
+        admin_mode: bool,
+        admin_write_mode: bool,
         json_output: bool | None,
     ) -> None:
         config = cast(GWConfig, ctx.obj["config"])
+        extra_scopes = (
+            ADMIN_WRITE_SCOPES if admin_write_mode else (ADMIN_SCOPES if admin_mode else None)
+        )
         creds = login(
+            scopes=extra_scopes,
             headless=headless,
             config=config,
             redirect_uri=redirect_uri,

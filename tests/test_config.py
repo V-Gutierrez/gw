@@ -133,3 +133,47 @@ def test_detect_timezone_from_zoneinfo_path(mock_resolve):
     mock_resolve.return_value = Path("/usr/share/zoneinfo/America/Manaus")
     cfg = GWConfig(timezone="auto")
     assert cfg.timezone == "America/Manaus"
+
+
+def test_scopes_default_to_none(tmp_path: Path):
+    """No `scopes` key means DEFAULT_SCOPES — the admin profile is opt-in, never implicit."""
+    cfg = load_config(tmp_path / "nonexistent.toml")
+    assert cfg.scopes is None
+
+
+def test_profile_scopes_override_the_root(tmp_path: Path):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        textwrap.dedent(
+            """
+            [profiles.csadmin]
+            token_path = "/tmp/token-csadmin.json"
+            scopes = [
+              "https://www.googleapis.com/auth/admin.directory.user.readonly",
+              "https://www.googleapis.com/auth/admin.directory.group.readonly",
+            ]
+            """
+        )
+    )
+
+    cfg = load_config(config_file, profile="csadmin")
+    assert cfg.scopes == [
+        "https://www.googleapis.com/auth/admin.directory.user.readonly",
+        "https://www.googleapis.com/auth/admin.directory.group.readonly",
+    ]
+
+    # A sibling profile is untouched: separate token file, separate scope list.
+    other = load_config(config_file, profile="controlspace")
+    assert other.scopes is None
+
+
+def test_scopes_must_be_a_list_of_strings(tmp_path: Path):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('scopes = "not-a-list"\n')
+
+    try:
+        load_config(config_file)
+    except ValueError as exc:
+        assert "scopes" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for non-list scopes")

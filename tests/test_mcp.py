@@ -17,6 +17,27 @@ def test_mcp_lists_expected_tools() -> None:
     tool_names = anyio.run(run)
 
     assert tool_names == [
+        "admin_check_access",
+        "admin_chromeos",
+        "admin_group_add",
+        "admin_group_create",
+        "admin_group_members",
+        "admin_group_remove",
+        "admin_groups",
+        "admin_mobile",
+        "admin_orgunit_create",
+        "admin_orgunits",
+        "admin_reports",
+        "admin_roles",
+        "admin_telemetry",
+        "admin_user_create",
+        "admin_user_get",
+        "admin_user_move",
+        "admin_user_rename",
+        "admin_user_restore",
+        "admin_user_set_admin",
+        "admin_user_suspend",
+        "admin_users",
         "calendar_agenda",
         "calendar_create",
         "calendar_delete",
@@ -78,3 +99,19 @@ def test_mcp_calls_tool_and_returns_json_text() -> None:
     assert payload["id"] == "1"
     assert payload["name"] == "Doc"
     assert structured["result"][0]["id"] == "1"
+
+
+def test_destructive_device_action_is_not_exposed_over_mcp() -> None:
+    """A wipe's only rail is a serial retyped by a human; MCP has nobody to ask.
+
+    Every other admin write is reversible and ships with dry_run=True by default. This one
+    is not reversible, so it stays CLI-only — the absence is the safety property.
+    """
+
+    async def run() -> list[str]:
+        tools = await mcp_server.list_tools()
+        return [tool.name for tool in tools]
+
+    names = anyio.run(run)
+
+    assert not any("device_action" in name or "wipe" in name for name in names)

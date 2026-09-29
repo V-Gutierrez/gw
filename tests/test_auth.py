@@ -72,6 +72,7 @@ def _patch_config(token_path: Path, secrets_path: Path):
     mock_cfg.token = token_path
     mock_cfg.credentials = secrets_path
     mock_cfg.timeout_seconds = 30
+    mock_cfg.scopes = None
     with patch("gw.auth._get_config", return_value=mock_cfg):
         yield mock_cfg
 
@@ -674,7 +675,12 @@ class TestCLICommands:
         assert result.exit_code == 0
         assert "Authenticated" in result.output
         mock_login.assert_called_once_with(
-            headless=False, config=auth_config, redirect_uri=None, url_only=False, code=None
+            scopes=None,
+            headless=False,
+            config=auth_config,
+            redirect_uri=None,
+            url_only=False,
+            code=None,
         )
 
     @pytest.mark.usefixtures("_patch_config")
@@ -692,7 +698,12 @@ class TestCLICommands:
 
         assert result.exit_code == 0
         mock_login.assert_called_once_with(
-            headless=True, config=auth_config, redirect_uri=None, url_only=False, code=None
+            scopes=None,
+            headless=True,
+            config=auth_config,
+            redirect_uri=None,
+            url_only=False,
+            code=None,
         )
 
     @pytest.mark.usefixtures("_patch_config")
@@ -714,6 +725,7 @@ class TestCLICommands:
 
         assert result.exit_code == 0
         mock_login.assert_called_once_with(
+            scopes=None,
             headless=True,
             config=auth_config,
             redirect_uri="http://127.0.0.1:9000",
@@ -840,7 +852,12 @@ class TestScopeDrift:
 
         assert result is fresh
         mock_flow_cls.from_client_secrets_file.assert_called_once()
-        assert mock_flow_cls.from_client_secrets_file.call_args.args[1] == DEFAULT_SCOPES
+        # The union, not the replacement: consent overwrites the token's scope list, so
+        # asking for exactly DEFAULT_SCOPES would silently strip the `openid` it already has.
+        assert mock_flow_cls.from_client_secrets_file.call_args.args[1] == [
+            "openid",
+            *[scope for scope in DEFAULT_SCOPES if scope != "openid"],
+        ]
 
     @pytest.mark.usefixtures("_patch_config")
     @patch("gw.auth.InstalledAppFlow")
@@ -854,3 +871,76 @@ class TestScopeDrift:
             assert login(token_path=token_path) is existing
 
         mock_flow_cls.from_client_secrets_file.assert_not_called()
+
+
+class TestProfileScopes:
+    """A profile carries its own scope list, so an admin login cannot widen the others.
+
+    This is the whole reason `gw admin` needs no service account: each profile already has
+    its own `token_path`, and now its own `scopes`. Consenting to Directory API on a
+    dedicated profile leaves `pessoal`, `consi` and `controlspace` byte-identical.
+    """
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_login_asks_for_the_profile_scopes(
+        self, mock_flow_cls: MagicMock, token_path: Path, secrets_path: Path
+    ) -> None:
+        admin_scopes = ["https://www.googleapis.com/auth/admin.directory.user.readonly"]
+        cfg = MagicMock()
+        cfg.token = token_path
+        cfg.credentials = secrets_path
+        cfg.scopes = admin_scopes
+        mock_flow_cls.from_client_secrets_file.return_value.run_local_server.return_value = (
+            _make_creds()
+        )
+
+        with patch("gw.auth.load_credentials", return_value=None):
+            login(config=cfg)
+
+        assert mock_flow_cls.from_client_secrets_file.call_args.args[1] == admin_scopes
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_explicit_scopes_still_win_over_the_profile(
+        self, mock_flow_cls: MagicMock, token_path: Path, secrets_path: Path
+    ) -> None:
+        cfg = MagicMock()
+        cfg.token = token_path
+        cfg.credentials = secrets_path
+        cfg.scopes = ["https://www.googleapis.com/auth/admin.directory.user.readonly"]
+        explicit = ["https://www.googleapis.com/auth/admin.reports.audit.readonly"]
+        mock_flow_cls.from_client_secrets_file.return_value.run_local_server.return_value = (
+            _make_creds()
+        )
+
+        with patch("gw.auth.load_credentials", return_value=None):
+            login(scopes=explicit, config=cfg)
+
+        assert mock_flow_cls.from_client_secrets_file.call_args.args[1] == explicit
+
+    @pytest.mark.usefixtures("_patch_config")
+    @patch("gw.auth.InstalledAppFlow")
+    def test_no_profile_scopes_falls_back_to_defaults(
+        self, mock_flow_cls: MagicMock, token_path: Path, secrets_path: Path
+    ) -> None:
+        cfg = MagicMock()
+        cfg.token = token_path
+        cfg.credentials = secrets_path
+        cfg.scopes = None
+        mock_flow_cls.from_client_secrets_file.return_value.run_local_server.return_value = (
+            _make_creds()
+        )
+
+        with patch("gw.auth.load_credentials", return_value=None):
+            login(config=cfg)
+
+        assert mock_flow_cls.from_client_secrets_file.call_args.args[1] == DEFAULT_SCOPES
+
+    def test_admin_scopes_are_read_only(self) -> None:
+        """Phase 1 ships inventory only: nothing here can change the domain."""
+        from gw.auth import ADMIN_SCOPES
+
+        assert ADMIN_SCOPES
+        for scope in ADMIN_SCOPES:
+            assert scope.endswith(".readonly"), scope
