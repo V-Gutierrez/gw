@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.9.5 (2026-09-29)
+
+Quatro rails do grupo `admin` prometiam mais do que cumpriam. Encontrados por revisão cega
+e provados por execução antes de tocar no código.
+
+### Fixed
+
+- **`user-admin` executava sem `--grant` nem `--revoke`, e chamava a revogação.** A flag
+  pareada levava `required=True`, que o click 8.1.8 impõe e o 8.3.1 ignora: o **mesmo
+  binário 0.9.4** recusava na instalação Homebrew e, no venv do repo, enviava
+  `users.makeAdmin` com `body={"status": null}` e imprimia «Admin revoked» com exit 0 — uma
+  mudança de privilégio que ninguém declarou, anunciada como se fosse intencional. A
+  verificação passou para o nosso código: uma garantia que um bump menor de dependência
+  apaga não é uma garantia.
+- **O `--dry-run` humano imprimia o método e deitava fora o corpo.** `[dry-run]
+  users.update — nothing was sent` era idêntico para dois destinos diferentes, e o help
+  promete «Print what would be sent». O corpo só saía com `--json`, que não é o modo por
+  omissão de quem revê um ensaio antes de o executar a sério. A password continua redigida
+  (`"password": "***"`).
+- **`mobile-action` telefonava ao registo antes de recusar o retype em falta.** O
+  `device-action` já recusava localmente; o irmão fazia `mobiledevices.get` e só depois
+  levantava o erro de uso. Passam a partilhar o mesmo guarda (`_require_retype`), e a
+  invocação desarmada custa zero round-trips.
+- **`--yes` anunciava «Skip the confirmation prompt» nos cinco comandos irreversíveis, onde
+  não há prompt nenhum.** `user-delete`, `group-delete`, `orgunit-delete`, `device-action` e
+  `mobile-action` são armados pelo retype e nunca chamam `_confirm`. A flag continua aceite
+  — os scripts já a passam — e o help passa a dizer que é ignorada. Flag inerte anunciada
+  como travão é pior do que flag nenhuma.
+
+Suíte: **379** (era 375). Os quatro testes novos foram provados vermelhos no código de
+0.9.4 antes da correção.
+
 ## v0.9.4 (2026-09-29)
 
 `user-create` pedia o email e o nome e deixava a ficha em branco. As contas desta org têm

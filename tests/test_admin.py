@@ -1032,7 +1032,15 @@ def test_dry_run_shows_the_password_field_it_would_send(mock_build_service: Magi
 
     reset = runner.invoke(
         main,
-        ["admin", "user-password", "ana@example.com", "--password", "Tmp!12345", "--dry-run", "--json"],
+        [
+            "admin",
+            "user-password",
+            "ana@example.com",
+            "--password",
+            "Tmp!12345",
+            "--dry-run",
+            "--json",
+        ],
     )
     assert reset.exit_code == 0
     assert json.loads(reset.output)["body"]["password"] == "***"
@@ -1185,3 +1193,85 @@ def test_user_create_without_profile_flags_sends_no_empty_blocks(mock_build_serv
     body = json.loads(result.output)["body"]
     for campo in ("organizations", "phones", "recoveryEmail", "recoveryPhone", "orgUnitPath"):
         assert campo not in body
+
+
+# ------------------------------------------------- rails that must not depend on click
+
+
+@patch("gw.services.admin.build_service")
+def test_user_admin_refuses_when_neither_grant_nor_revoke_is_given(mock_build_service: MagicMock):
+    """The privilege flag pair is checked here, because click checks it only on some versions.
+
+    `--grant/--revoke` carried `required=True`. Click 8.1.8 enforces that on a flag pair and
+    click 8.3.1 does not, so the same 0.9.4 binary refused on the Homebrew install and, in the
+    repo venv, called `users.makeAdmin` with `body={"status": None}` and printed "Admin
+    revoked" with exit 0 — a privilege change nobody declared, announced as if intended. A
+    rail whose presence depends on a transitive dependency's minor version is not a rail.
+    """
+    service = MagicMock()
+    service.users.return_value.makeAdmin.return_value = _mock_execute({})
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["admin", "user-admin", "a@x.com", "--yes"])
+
+    assert result.exit_code != 0
+    service.users.return_value.makeAdmin.assert_not_called()
+
+
+@patch("gw.services.admin.build_service")
+def test_dry_run_shows_the_body_to_a_human_not_only_to_json(mock_build_service: MagicMock):
+    """`--dry-run` promises "what would be sent"; printing the method name is not that.
+
+    The human branch printed `[dry-run] groups.insert — nothing was sent` and dropped the
+    body, so two different rehearsals of two different payloads were byte-identical on
+    screen. The operator who uses the rehearsal the default way learned nothing from it.
+    """
+    service = MagicMock()
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main, ["admin", "group-create", "novo@x.com", "--name", "Novo", "--dry-run"]
+    )
+
+    assert result.exit_code == 0
+    assert "groups.insert" in result.output
+    assert "novo@x.com" in result.output
+    assert "Novo" in result.output
+    service.groups.return_value.insert.assert_not_called()
+
+
+@patch("gw.services.admin.build_service")
+def test_mobile_action_refuses_before_it_telephones_the_registry(mock_build_service: MagicMock):
+    """The missing retype is a usage error, and a usage error costs no round-trip.
+
+    `device-action` already refused locally; `mobile-action` reached `mobiledevices.get`
+    first and only then raised. Same rail, two behaviours, and the unarmed invocation paid
+    for a call it never needed.
+    """
+    service = MagicMock()
+    service.mobiledevices.return_value.get.return_value = _mock_execute({"serialNumber": "SN9"})
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["admin", "mobile-action", "m1", "block"])
+
+    assert result.exit_code != 0
+    service.mobiledevices.return_value.get.assert_not_called()
+
+
+def test_yes_does_not_claim_a_prompt_the_irreversible_commands_never_show():
+    """`--yes` is inert on the five commands armed by a retype, so its help must say so.
+
+    `_write_options` attached "Skip the confirmation prompt." to every write. The five
+    irreversible ones never call `_confirm`: there is no prompt, so the flag skips nothing
+    and the help described a safety step that does not exist.
+    """
+    for command in (
+        "user-delete",
+        "group-delete",
+        "orgunit-delete",
+        "device-action",
+        "mobile-action",
+    ):
+        help_text = runner.invoke(main, ["admin", command, "--help"]).output
+        assert "Skip the confirmation prompt" not in help_text, command
+        assert "--confirm-" in help_text, command

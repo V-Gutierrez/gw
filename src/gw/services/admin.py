@@ -15,14 +15,19 @@ page at 100–500 rows depending on the endpoint, so a single call would have qu
 dropped everything past the first page of an 82-machine estate.
 
 **Writes exist, and they are gated by blast radius.** Every mutating command takes
-``--yes`` to skip its confirmation and ``--dry-run`` to prove what it would send without
-sending it. ``device-action`` is the exception: ``--yes`` does not arm it, because wiping
-the wrong laptop has no undo — the device's serial has to be retyped and matched against
-what the API reports.
+``--dry-run``, which prints the exact body that would be sent, on screen and not only
+under ``--json``. Reversible writes also take ``--yes`` to skip a confirmation prompt.
+
+Five commands are armed differently, because they have no undo: ``user-delete``,
+``group-delete``, ``orgunit-delete``, ``device-action`` and ``mobile-action`` ignore
+``--yes`` and demand the target's name retyped. ``--yes`` stays accepted there so existing
+scripts keep parsing, and its help says it is ignored — an inert flag advertised as a
+safety step is worse than no flag.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -333,10 +338,15 @@ def admin_whoami(config: GWConfig | None = None) -> dict[str, Any]:
 # Victor's decision, 2026-09-29: the group manages the domain, it does not only read it.
 # Three rails, in order of how much they cost when they are missing:
 #
-# 1. `--dry-run` returns the exact body that would be sent, having called nothing.
+# 1. `--dry-run` returns the exact body that would be sent, and prints it. The two device
+#    actions are the caveat: proving the retype means asking the registry who owns an
+#    opaque resource id, so a read happens. Nothing is changed either way.
 # 2. `--yes` skips an interactive confirmation that otherwise blocks.
-# 3. `device-action` ignores `--yes` entirely and demands the serial, because a wipe is
-#    the one operation here whose victim is a person who did nothing wrong.
+# 3. The five irreversible commands ignore `--yes` and demand the target retyped, because
+#    their victim is a person who did nothing wrong.
+# 4. A rail is checked in this file, never delegated to click's `required`: the same 0.9.4
+#    binary enforced `--grant/--revoke` under click 8.1.8 and let `{"status": None}` through
+#    under 8.3.1 (measured 2026-09-29). A guarantee a minor bump can delete is not one.
 
 
 def _confirm(action: str, target: str, *, yes: bool, dry_run: bool = False) -> None:
@@ -846,7 +856,14 @@ def _emit_one(
     if use_json_output(ctx, json_output):
         print_json(data)
     elif data.get("dry_run"):
+        # The method name alone made two rehearsals of two different payloads identical on
+        # screen. `--dry-run` exists to be read before the real invocation, and the default
+        # output is the human one, so the body belongs here and not only under --json.
         print_human(f"[dry-run] {data['would_call']} — nothing was sent")
+        payload = {k: v for k, v in data.items() if k not in ("dry_run", "would_call")}
+        if payload:
+            for row in json.dumps(payload, indent=2, ensure_ascii=False).splitlines():
+                print_human(f"  {row}")
     else:
         print_success(line)
 
@@ -985,12 +1002,45 @@ def register_admin_commands(group: click.Group) -> None:
 
     # ----------------------------------------------------------------- writes
 
-    def _write_options(fn):
-        fn = click.option(
-            "--dry-run", is_flag=True, help="Print what would be sent; change nothing."
-        )(fn)
-        fn = click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")(fn)
+    def _build_write_options(fn, *, yes_help: str, dry_run_help: str):
+        fn = click.option("--dry-run", is_flag=True, help=dry_run_help)(fn)
+        fn = click.option("--yes", is_flag=True, help=yes_help)(fn)
         return fn
+
+    _DRY_RUN_HELP = "Print what would be sent; change nothing."
+    _DRY_RUN_READS_HELP = (
+        "Print what would be sent; change nothing. Reads the device to check the serial."
+    )
+    # The five irreversible commands never call `_confirm`, so there is no prompt for --yes
+    # to skip. The flag stays accepted — scripts already pass it — and stops claiming a
+    # safety step that does not exist.
+    _YES_INERT_HELP = (
+        "Accepted and ignored: this command is armed by the retyped --confirm-… argument."
+    )
+
+    def _write_options(fn):
+        return _build_write_options(
+            fn, yes_help="Skip the confirmation prompt.", dry_run_help=_DRY_RUN_HELP
+        )
+
+    def _irreversible_write_options(fn):
+        return _build_write_options(fn, yes_help=_YES_INERT_HELP, dry_run_help=_DRY_RUN_HELP)
+
+    def _device_write_options(fn):
+        return _build_write_options(fn, yes_help=_YES_INERT_HELP, dry_run_help=_DRY_RUN_READS_HELP)
+
+    def _require_retype(value: str | None, *, what: str, kind: str, because: str) -> None:
+        """Refuse the unarmed invocation here, before anything reaches the network.
+
+        `device-action` checked locally and `mobile-action` did not: the same missing
+        argument cost a `mobiledevices.get` round-trip before the usage error. Same rail,
+        one implementation.
+        """
+        if not value:
+            raise click.UsageError(
+                f"{what} requires --confirm-{kind}: retype the {kind} of what you mean. "
+                f"--yes does not cover this command, because {because}."
+            )
 
     @group.command("user-create")
     @click.argument("email")
@@ -1144,7 +1194,7 @@ def register_admin_commands(group: click.Group) -> None:
         default=None,
         help="The device's serial, retyped. Required — --yes does not arm this command.",
     )
-    @_write_options
+    @_device_write_options
     @json_option
     @click.pass_context
     def device_action_command(
@@ -1156,11 +1206,9 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
-        if not confirm_serial:
-            raise click.UsageError(
-                "device-action requires --confirm-serial: retype the serial of the device you "
-                "mean. --yes does not cover this command, because a wipe has no undo."
-            )
+        _require_retype(
+            confirm_serial, what="device-action", kind="serial", because="a wipe has no undo"
+        )
         data = act_on_chromeos_device(
             device_id=device_id,
             action=action,
@@ -1232,7 +1280,7 @@ def register_admin_commands(group: click.Group) -> None:
         default=None,
         help="The user's email, retyped. Required — deleting destroys their Drive and Gmail.",
     )
-    @_write_options
+    @_irreversible_write_options
     @json_option
     @click.pass_context
     def user_delete_command(
@@ -1296,7 +1344,12 @@ def register_admin_commands(group: click.Group) -> None:
 
     @group.command("user-admin")
     @click.argument("email")
-    @click.option("--grant/--revoke", "grant", default=None, required=True)
+    @click.option(
+        "--grant/--revoke",
+        "grant",
+        default=None,
+        help="Required. Neither one is a refusal, never a silent revoke.",
+    )
     @_write_options
     @json_option
     @click.pass_context
@@ -1308,6 +1361,15 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
+        # click's `required=True` on a flag pair is enforced by 8.1.8 and ignored by 8.3.1:
+        # the same 0.9.4 binary refused on Homebrew and, in the repo venv, sent
+        # `{"status": None}` and printed "Admin revoked" with exit 0. A rail that a
+        # transitive minor version can remove is checked in our own code.
+        if grant is None:
+            raise click.UsageError(
+                "user-admin requires --grant or --revoke: say which privilege change you "
+                "mean. Neither one is not a revoke."
+            )
         _confirm(
             "Grant super admin to" if grant else "Revoke super admin from",
             email,
@@ -1352,7 +1414,7 @@ def register_admin_commands(group: click.Group) -> None:
         default=None,
         help="The group's email, retyped. Required — the membership list does not come back.",
     )
-    @_write_options
+    @_irreversible_write_options
     @json_option
     @click.pass_context
     def group_delete_command(
@@ -1398,7 +1460,7 @@ def register_admin_commands(group: click.Group) -> None:
         default=None,
         help="The org unit path, retyped. Required — deleting an org unit is irreversible.",
     )
-    @_write_options
+    @_irreversible_write_options
     @json_option
     @click.pass_context
     def orgunit_delete_command(
@@ -1422,7 +1484,7 @@ def register_admin_commands(group: click.Group) -> None:
         default=None,
         help="The device's serial, retyped. Required — a wipe has no undo.",
     )
-    @_write_options
+    @_device_write_options
     @json_option
     @click.pass_context
     def mobile_action_command(
@@ -1434,6 +1496,9 @@ def register_admin_commands(group: click.Group) -> None:
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
+        _require_retype(
+            confirm_serial, what="mobile-action", kind="serial", because="a wipe has no undo"
+        )
         data = act_on_mobile_device(
             resource_id=resource_id,
             action=action,
