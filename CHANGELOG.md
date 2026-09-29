@@ -1,5 +1,58 @@
 # Changelog
 
+## v0.9.0 (2026-09-29)
+
+Novo grupo `gw admin`: 27 comandos que leem **e gerem** o domínio Workspace.
+
+### Added
+- **`gw admin` — o domínio por comando, em vez do Admin Console.** Onze comandos de
+  leitura (`users`, `user`, `groups`, `group-members`, `orgunits`, `chromeos`, `mobile`,
+  `telemetry`, `roles`, `reports`, `whoami`) e dezasseis de escrita, cobrindo o ciclo de
+  vida completo: criar, renomear, repor palavra-passe, suspender, restaurar, mover,
+  conceder ou retirar super admin, apagar; criar e apagar grupos e unidades
+  organizacionais; gerir membros; e agir sobre dispositivos ChromeOS e móveis.
+  Substitui o CSV exportado à mão que produziu o catálogo de 82 máquinas de 2026-08-28.
+- **Travões proporcionais ao raio de estrago.** Todo comando que muda o domínio tem
+  `--dry-run`, que devolve o corpo exato que iria para a Google tendo chamado nada. O que
+  é reversível basta-se com `--yes`. Os cinco irreversíveis — `user-delete`,
+  `group-delete`, `orgunit-delete`, `device-action`, `mobile-action` — **recusam o `--yes`
+  sozinho** e exigem o nome do alvo retypado, conferido contra o que a API reporta.
+- **`scopes` é chave de perfil no `config.toml`,** e `gw auth login --admin` /
+  `--admin-write` dispensa copiá-los à mão. Um perfil dedicado consente administração sem
+  tocar nos tokens `pessoal`, `consi` ou `controlspace`, porque cada perfil já tinha
+  `token_path` próprio. Isto substitui o plano original de service account com
+  domain-wide delegation, que existia para evitar um risco — o incidente 0.8.2 — que já
+  estava corrigido desde 2026-09-14.
+- **Paginação completa,** só neste grupo. Nenhum outro serviço do `gw` pagina porque
+  nenhum outro precisa devolver o conjunto inteiro; um inventário truncado continua a
+  parecer um inventário, e o Directory API corta em 100–500 linhas por página.
+- **Vinte e uma tools novas no `gw mcp serve`** (44 → 65): as onze leituras e as dez
+  escritas reversíveis, sempre com `dry_run=True` por omissão. Os cinco irreversíveis
+  ficam de fora de propósito — o travão deles é um humano a retypar um nome num terminal,
+  que é o que um chamador por chat não consegue fazer.
+
+### Fixed
+- **`re-consentir apagava scopes concedidos`.** Pedir a lista de um perfil substituía a do
+  token em vez de a somar, por isso ganhar administração fazia perder `gmail.send`,
+  `calendar`, `drive` e `tasks`. Era a mesma classe de falha do 0.8.2, de cara nova.
+  `login()` passa a pedir a união, logo re-consentir só pode acrescentar capacidade.
+- **`mcp>=1.26.0` resolvia para 2.x e a suíte inteira deixava de coletar.** O 2.x renomeou
+  `FastMCP` para `MCPServer`; o sintoma eram 14 erros de import em ficheiros sem relação
+  com MCP, porque a coleta aborta antes de qualquer teste correr. Pin para `<2`.
+
+### Notas de revisão
+Duas rondas de revisão adversarial cega. A primeira achou **8 defeitos que 336 testes
+verdes escondiam** — os mocks concordavam com o código porque partilhavam as mesmas
+suposições erradas. Entre eles: `--limit -1` a sair com exit 0 e `0 row(s)` (um domínio
+vazio reportado como sucesso), paginação que não terminava com um cursor que não avança
+(22.167 pedidos em 2 segundos), `scopes` na raiz do config a aplicar-se a todos os perfis,
+e `whoami` a reportar um `TypeError` nosso como "API inalcançável". A verificação contra o
+discovery document (rev. 20260917) corrigiu ainda a projeção dos dispositivos: os campos
+de `BASIC` são documentados com "e.g.", logo `lastSync` e `osVersion` não estavam
+prometidos — agora pede-se `projection=FULL`.
+
+365 testes (eram 316). `ruff check` e `ruff format` limpos.
+
 ## v0.8.3 (2026-09-14)
 
 ### Added
