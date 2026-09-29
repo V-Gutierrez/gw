@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.9.6 (2026-09-29)
+
+Apagar um utilizador deixa de destruir a Drive dele. O grupo `admin` ganha a Data Transfer
+API, e o `gw` passa a mostrar o perfil que ele próprio escreve.
+
+### Added
+
+- **`user-delete --transfer-to OUTRO@dominio` move a Drive e o Calendário antes de apagar,
+  e espera.** A espera não é zelo: `transfers.insert` responde de imediato com `inProgress`
+  e o trabalho corre depois, logo apagar nesse intervalo destrói exatamente o que se estava
+  a copiar — em silêncio, porque o `users.delete` responde com sucesso na mesma. Só
+  `completed` autoriza o apagamento; qualquer outro estado, incluindo o esgotar do
+  `--transfer-timeout` (900s por omissão), levanta erro e deixa a conta de pé.
+- **Quatro comandos novos de transferência.** `transfer-apps` lista o que este domínio
+  consegue mover (os IDs de aplicação são por cliente, não constantes); `transfer DE PARA`
+  inicia; `transfers` lista; `transfer-status ID --wait` bloqueia até assentar e sai
+  diferente de zero enquanto não estiver `completed`, para servir de porteiro num script.
+- **`--include-shared`, e por omissão só o privado.** `PRIVACY_LEVEL` aceita `PRIVATE` e
+  `SHARED`. Arrastar o partilhado reescreve permissões em ficheiros de outras pessoas, por
+  isso é uma decisão pedida, nunca herdada.
+- **`admin user` mostra cargo, departamento, local, telemóvel e recuperação**, e `--raw`
+  devolve o recurso da Google inteiro. Até 0.9.5 a leitura dava email, nome, unidade e
+  estado: confirmar o que o `user-create` tinha acabado de escrever obrigava a sair do `gw`
+  e chamar a API à mão, o que é o mesmo que não verificar.
+- **`whoami` sonda a `datatransfer.applications`.** O serviço e o scope são próprios e
+  falham sozinhos: um domínio com o Directory inteiro concedido responde 403 aqui.
+  Descobri-lo a meio da saída de alguém é descobri-lo tarde.
+- **Quatro tools novas no `gw mcp serve`** (67 → 71): `admin_transfer`,
+  `admin_transfer_apps`, `admin_transfer_status`, `admin_transfers`.
+
+### Changed
+
+- **Scopes novos:** `admin.datatransfer.readonly` em `--admin` e `admin.datatransfer` em
+  `--admin-write`. Exige re-consentimento: `gw --profile csadmin auth login --admin-write`.
+
+### Fixed
+
+- **A transferência é feita por ID de perfil, e o email era aceite como se fosse um.**
+  `oldOwnerUserId` e `newOwnerUserId` são IDs (discovery doc de `datatransfer_v1`, revisão
+  20260917). Os dois endereços são resolvidos antes de montar o corpo — mandar o email
+  produzia um pedido que a API aceita e que não transfere nada de ninguém, mesmo antes de o
+  utilizador ser apagado a seguir.
+
+Suíte: **393** (era 384). Os nove testes novos foram provados vermelhos antes da
+implementação.
+
 ## v0.9.5 (2026-09-29)
 
 Quatro rails do grupo `admin` prometiam mais do que cumpriam. Encontrados por revisão cega

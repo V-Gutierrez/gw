@@ -65,6 +65,9 @@ ADMIN_SCOPES = [
     # `admin reports` respondem 403 com os outros seis concedidos.
     "https://www.googleapis.com/auth/admin.directory.rolemanagement.readonly",
     "https://www.googleapis.com/auth/admin.reports.audit.readonly",
+    # Ver que transferências existem e o que este domínio consegue mover. A leitura é
+    # separada da escrita aqui como em tudo o resto: listar não inicia nada.
+    "https://www.googleapis.com/auth/admin.datatransfer.readonly",
 ]
 
 # Administração com escrita. Cada um destes substitui o `.readonly` correspondente — o
@@ -82,6 +85,9 @@ ADMIN_WRITE_SCOPES = [
     "https://www.googleapis.com/auth/chrome.management.telemetry.readonly",
     "https://www.googleapis.com/auth/admin.directory.rolemanagement.readonly",
     "https://www.googleapis.com/auth/admin.reports.audit.readonly",
+    # Mover a Drive e o Calendário de quem sai para quem fica. É o scope que torna
+    # `user-delete --transfer-to` possível: sem ele, apagar é destruir.
+    "https://www.googleapis.com/auth/admin.datatransfer",
 ]
 
 

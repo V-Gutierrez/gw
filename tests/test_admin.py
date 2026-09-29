@@ -337,6 +337,10 @@ def test_admin_whoami_reports_each_api(mock_build_service: MagicMock):
         "directory.groups",
         "directory.chromeos",
         "chrome.telemetry",
+        # A Data Transfer API tem serviço e scope próprios e falha sozinha: um domínio com o
+        # Directory inteiro concedido responde 403 aqui. `user-delete --transfer-to` depende
+        # desta sonda, e descobri-lo a meio de uma saída é descobri-lo tarde.
+        "datatransfer.applications",
     }
     assert all(probe["reachable"] for probe in payload["probes"])
 
@@ -363,7 +367,7 @@ def test_admin_whoami_reports_a_denied_api_without_raising(mock_build_service: M
     assert result.exception is None or isinstance(result.exception, SystemExit)
     payload = json.loads(result.output)
     assert payload["ok"] is False
-    assert len(payload["probes"]) == 4
+    assert len(payload["probes"]) == 5
     denied = next(probe for probe in payload["probes"] if probe["api"] == "directory.groups")
     assert denied["reachable"] is False
     assert "Insufficient permission" in denied["error"]
@@ -1433,3 +1437,252 @@ def test_a_device_dry_run_does_not_claim_nothing_was_sent(mock_build_service: Ma
     assert "nothing was sent" not in result.output
     assert "nothing was changed" in result.output
     service.chromeosdevices.return_value.action.assert_not_called()
+
+
+# ------------------------------------------------- o perfil e a transferência de dados
+
+
+@patch("gw.services.admin.build_service")
+def test_the_profile_a_write_sets_is_readable_by_the_same_cli(mock_build_service: MagicMock):
+    """`user-create` escrevia cargo, telefone e recuperação, e nenhum comando os mostrava.
+
+    A forma normalizada devolvia email, nome, OU e estado. Confirmar o que se acabou de
+    escrever obrigava a ir à API por fora do `gw`, o que é o mesmo que não ter verificação:
+    a ferramenta que escreve tem de ser a ferramenta que prova.
+    """
+    service = MagicMock()
+    service.users.return_value.get.return_value = _mock_execute(
+        {
+            "id": "9",
+            "primaryEmail": "diogo@x.com",
+            "name": {"fullName": "Diogo Coelho"},
+            "orgUnitPath": "/Stores",
+            "organizations": [
+                {"primary": True, "title": "Assistant Store Manager", "department": "Sales"}
+            ],
+            "phones": [{"value": "+351926703392", "type": "mobile"}],
+            "recoveryEmail": "pessoal@gmail.com",
+            "recoveryPhone": "+351926703392",
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["admin", "user", "diogo@x.com", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["title"] == "Assistant Store Manager"
+    assert data["department"] == "Sales"
+    assert data["phone"] == "+351926703392"
+    assert data["recovery_email"] == "pessoal@gmail.com"
+    assert data["recovery_phone"] == "+351926703392"
+
+
+@patch("gw.services.admin.build_service")
+def test_user_raw_hands_back_googles_own_resource(mock_build_service: MagicMock):
+    """Quando o normalizado não chega, `--raw` evita a ida à API por fora."""
+    service = MagicMock()
+    service.users.return_value.get.return_value = _mock_execute(
+        {"primaryEmail": "a@x.com", "kind": "admin#directory#user", "customSchemas": {"X": {}}}
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["admin", "user", "a@x.com", "--raw", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["kind"] == "admin#directory#user"
+    assert data["customSchemas"] == {"X": {}}
+
+
+def _transfer_service(apps=None, transfer=None):
+    """A Data Transfer API é um serviço à parte: `admin`/`datatransfer_v1`."""
+    directory = MagicMock()
+    directory.users.return_value.get.side_effect = lambda userKey, **kw: _mock_execute(
+        {"id": {"velha@x.com": "111", "nova@x.com": "222"}[userKey], "primaryEmail": userKey}
+    )
+    transfer_svc = MagicMock()
+    transfer_svc.applications.return_value.list.return_value = _mock_execute(
+        {
+            "applications": apps
+            or [
+                {
+                    "id": "55656082996",
+                    "name": "Drive and Docs",
+                    "transferParams": [
+                        {"key": "PRIVACY_LEVEL", "value": ["PRIVATE", "SHARED"]},
+                    ],
+                },
+                {"id": "435070579839", "name": "Calendar", "transferParams": []},
+            ]
+        }
+    )
+    transfer_svc.transfers.return_value.insert.return_value = _mock_execute(
+        transfer or {"id": "T1", "overallTransferStatusCode": "inProgress"}
+    )
+
+    def build(name, version, **kw):
+        return transfer_svc if version == "datatransfer_v1" else directory
+
+    return build, directory, transfer_svc
+
+
+@patch("gw.services.admin.build_service")
+def test_transfer_sends_ids_because_emails_are_not_what_the_api_takes(
+    mock_build_service: MagicMock,
+):
+    """`oldOwnerUserId` e `newOwnerUserId` são IDs de perfil, não endereços.
+
+    O discovery doc de `datatransfer_v1` (lido 29/09/2026) nomeia os dois campos como IDs.
+    Passar o email produz um pedido aceite que não transfere nada de ninguém, que é o modo
+    de falha mais caro que existe aqui: o utilizador é apagado a seguir.
+    """
+    build, directory, transfer_svc = _transfer_service()
+    mock_build_service.side_effect = build
+
+    result = runner.invoke(
+        main, ["admin", "transfer", "velha@x.com", "nova@x.com", "--yes", "--json"]
+    )
+
+    assert result.exit_code == 0
+    body = transfer_svc.transfers.return_value.insert.call_args.kwargs["body"]
+    assert body["oldOwnerUserId"] == "111"
+    assert body["newOwnerUserId"] == "222"
+    assert [a["applicationId"] for a in body["applicationDataTransfers"]] == [
+        "55656082996",
+        "435070579839",
+    ]
+
+
+@patch("gw.services.admin.build_service")
+def test_transfer_defaults_to_private_data_only(mock_build_service: MagicMock):
+    """Levar o que é partilhado muda permissões de ficheiros de outras pessoas.
+
+    `PRIVACY_LEVEL` aceita `PRIVATE` e `SHARED`. O que a saída de alguém tem de preservar é
+    o que só essa pessoa tinha; arrastar o partilhado é uma decisão sobre a Drive alheia e
+    tem de ser pedida, não herdada.
+    """
+    build, _, transfer_svc = _transfer_service()
+    mock_build_service.side_effect = build
+
+    runner.invoke(main, ["admin", "transfer", "velha@x.com", "nova@x.com", "--yes", "--json"])
+    body = transfer_svc.transfers.return_value.insert.call_args.kwargs["body"]
+    drive = next(
+        a for a in body["applicationDataTransfers"] if a["applicationId"] == "55656082996"
+    )
+    assert drive["applicationTransferParams"] == [{"key": "PRIVACY_LEVEL", "value": ["PRIVATE"]}]
+
+    runner.invoke(
+        main,
+        ["admin", "transfer", "velha@x.com", "nova@x.com", "--include-shared", "--yes", "--json"],
+    )
+    body = transfer_svc.transfers.return_value.insert.call_args.kwargs["body"]
+    drive = next(
+        a for a in body["applicationDataTransfers"] if a["applicationId"] == "55656082996"
+    )
+    assert drive["applicationTransferParams"] == [
+        {"key": "PRIVACY_LEVEL", "value": ["PRIVATE", "SHARED"]}
+    ]
+
+
+@patch("gw.services.admin.build_service")
+def test_transfer_apps_lists_what_this_domain_can_move(mock_build_service: MagicMock):
+    """Os IDs de aplicação são do cliente, não constantes — descobrem-se, não se escrevem."""
+    build, _, _ = _transfer_service()
+    mock_build_service.side_effect = build
+
+    result = runner.invoke(main, ["admin", "transfer-apps", "--json"])
+
+    assert result.exit_code == 0
+    rows = json.loads(result.output)
+    assert {r["name"] for r in rows} == {"Drive and Docs", "Calendar"}
+    assert rows[0]["id"] == "55656082996"
+
+
+@patch("gw.services.admin.build_service")
+def test_delete_refuses_while_the_transfer_is_still_running(mock_build_service: MagicMock):
+    """Apagar durante a transferência destrói o que estava a ser copiado.
+
+    `transfers.insert` devolve imediatamente e o trabalho corre depois: `inProgress` não é
+    uma transferência feita. Apagar aqui é perder a Drive que o comando existia para salvar,
+    e a perda é silenciosa — a API de delete responde 204 na mesma.
+    """
+    build, directory, transfer_svc = _transfer_service()
+    transfer_svc.transfers.return_value.get.return_value = _mock_execute(
+        {"id": "T1", "overallTransferStatusCode": "inProgress", "applicationDataTransfers": []}
+    )
+    mock_build_service.side_effect = build
+
+    result = runner.invoke(
+        main,
+        [
+            "admin",
+            "user-delete",
+            "velha@x.com",
+            "--confirm-email",
+            "velha@x.com",
+            "--transfer-to",
+            "nova@x.com",
+            "--transfer-timeout",
+            "0",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code != 0
+    # O `CliRunner` não renderiza o GwError — quem o imprime é o `run_cli`. A mensagem vive
+    # na exceção, e é ela que tem de nomear o estado que travou o apagamento.
+    assert "inProgress" in f"{result.output}{result.exception}"
+    directory.users.return_value.delete.assert_not_called()
+
+
+@patch("gw.services.admin.build_service")
+def test_delete_runs_once_the_transfer_reports_completed(mock_build_service: MagicMock):
+    build, directory, transfer_svc = _transfer_service()
+    transfer_svc.transfers.return_value.get.return_value = _mock_execute(
+        {"id": "T1", "overallTransferStatusCode": "completed", "applicationDataTransfers": []}
+    )
+    directory.users.return_value.delete.return_value = _mock_execute({})
+    mock_build_service.side_effect = build
+
+    result = runner.invoke(
+        main,
+        [
+            "admin",
+            "user-delete",
+            "velha@x.com",
+            "--confirm-email",
+            "velha@x.com",
+            "--transfer-to",
+            "nova@x.com",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert directory.users.return_value.delete.call_args.kwargs["userKey"] == "velha@x.com"
+    assert json.loads(result.output)["transfer"]["id"] == "T1"
+
+
+@patch("gw.services.admin.build_service")
+def test_transfer_dry_run_shows_the_body_and_inserts_nothing(mock_build_service: MagicMock):
+    build, _, transfer_svc = _transfer_service()
+    mock_build_service.side_effect = build
+
+    result = runner.invoke(
+        main, ["admin", "transfer", "velha@x.com", "nova@x.com", "--dry-run", "--json"]
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["dry_run"] is True
+    assert data["body"]["oldOwnerUserId"] == "111"
+    transfer_svc.transfers.return_value.insert.assert_not_called()
+
+
+def test_the_datatransfer_scopes_are_declared():
+    """Sem o scope o comando responde 403, e o 403 aparece depois do plano estar feito."""
+    from gw.auth import ADMIN_SCOPES, ADMIN_WRITE_SCOPES
+
+    assert "https://www.googleapis.com/auth/admin.datatransfer.readonly" in ADMIN_SCOPES
+    assert "https://www.googleapis.com/auth/admin.datatransfer" in ADMIN_WRITE_SCOPES

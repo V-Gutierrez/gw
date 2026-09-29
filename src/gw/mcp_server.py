@@ -14,7 +14,9 @@ from gw.services.admin import (
     create_admin_group,
     create_admin_orgunit,
     create_admin_user,
+    create_data_transfer,
     get_admin_user,
+    get_data_transfer,
     list_admin_chromeos,
     list_admin_group_members,
     list_admin_groups,
@@ -24,6 +26,8 @@ from gw.services.admin import (
     list_admin_roles,
     list_admin_telemetry,
     list_admin_users,
+    list_data_transfers,
+    list_transfer_applications,
     move_admin_user,
     remove_admin_group_member,
     rename_admin_user,
@@ -603,9 +607,10 @@ def admin_group_remove(group: str, member: str, dry_run: bool = True) -> dict:
 
 
 @mcp_server.tool()
-def admin_user_get(email: str) -> dict:
-    """One user's record: org unit, admin flag, suspension, last login."""
-    return get_admin_user(email, config=_config())
+def admin_user_get(email: str, raw: bool = False) -> dict:
+    """One user: org unit, admin flag, suspension, last login, plus title, department,
+    location, phone and recovery. `raw=True` returns Google's own resource."""
+    return get_admin_user(email, raw=raw, config=_config())
 
 
 @mcp_server.tool()
@@ -654,6 +659,42 @@ def admin_group_create(
 def admin_orgunit_create(name: str, parent: str = "/", dry_run: bool = True) -> dict:
     """Create an org unit under `parent`. Defaults to dry_run=True."""
     return create_admin_orgunit(name=name, parent=parent, dry_run=dry_run, config=_config())
+
+
+@mcp_server.tool()
+def admin_transfer_apps() -> list:
+    """Applications whose data this domain can move between users, with their IDs."""
+    return list_transfer_applications(config=_config())
+
+
+@mcp_server.tool()
+def admin_transfer(
+    from_email: str,
+    to_email: str,
+    include_shared: bool = False,
+    dry_run: bool = True,
+) -> dict:
+    """Move a leaving user's Drive and Calendar to another user. Asynchronous: the result
+    carries an id whose status starts at `inProgress`. Defaults to dry_run=True."""
+    return create_data_transfer(
+        from_email=from_email,
+        to_email=to_email,
+        include_shared=include_shared,
+        dry_run=dry_run,
+        config=_config(),
+    )
+
+
+@mcp_server.tool()
+def admin_transfer_status(transfer_id: str) -> dict:
+    """A transfer's overall and per-application status. `completed` is the only done."""
+    return get_data_transfer(transfer_id, config=_config())
+
+
+@mcp_server.tool()
+def admin_transfers(limit: int = 0, status: str | None = None) -> list:
+    """Every data transfer in the domain, newest first, optionally filtered by status."""
+    return list_data_transfers(limit=limit, status=status, config=_config())
 
 
 def run_mcp_server() -> None:

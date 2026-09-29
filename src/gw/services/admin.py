@@ -28,6 +28,7 @@ safety step is worse than no flag.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -49,6 +50,16 @@ def _directory_service(config: GWConfig | None = None):
 
 def _chrome_service(config: GWConfig | None = None):
     return build_service("chromemanagement", "v1", config=config)
+
+
+def _transfer_service(config: GWConfig | None = None):
+    """Mover dados de uma pessoa para outra é a Data Transfer API, não a Directory.
+
+    Serviço à parte (`admin`/`datatransfer_v1`, revisão 20260917) com scopes próprios. É a
+    razão de `user-delete --transfer-to` precisar de um consentimento que os outros
+    comandos de escrita não davam.
+    """
+    return build_service("admin", "datatransfer_v1", config=config)
 
 
 def _reports_service(config: GWConfig | None = None):
@@ -330,6 +341,16 @@ def admin_whoami(config: GWConfig | None = None) -> dict[str, Any]:
         ),
     )
 
+    # A transferência de dados tem serviço e scope próprios, por isso falha sozinha: um
+    # domínio com o Directory inteiro concedido responde 403 aqui. `user-delete
+    # --transfer-to` depende desta linha estar verde, e descobri-lo no meio de uma saída
+    # é descobri-lo tarde.
+    transfers = _transfer_service(config)
+    probe(
+        "datatransfer.applications",
+        lambda: execute_google_request(transfers.applications().list(customerId=CUSTOMER)),
+    )
+
     return {"ok": all(entry["reachable"] for entry in probes), "probes": probes}
 
 
@@ -568,9 +589,209 @@ def act_on_chromeos_device(
 # one user, a group's membership, who holds an admin role, and what people actually did.
 
 
-def get_admin_user(email: str, config: GWConfig | None = None) -> dict[str, Any]:
+def _primary_organization(user: dict[str, Any]) -> dict[str, Any]:
+    orgs = user.get("organizations") or []
+    return next((o for o in orgs if o.get("primary")), orgs[0] if orgs else {})
+
+
+def _first_phone(user: dict[str, Any]) -> str | None:
+    phones = user.get("phones") or []
+    work = next((p for p in phones if p.get("type") == "mobile"), phones[0] if phones else {})
+    return work.get("value")
+
+
+def get_admin_user(
+    email: str, raw: bool = False, config: GWConfig | None = None
+) -> dict[str, Any]:
+    """Um utilizador com o perfil que as escritas escrevem, não só com a chave.
+
+    A forma da listagem devolvia email, nome, OU e estado. Confirmar o que `user-create`
+    tinha acabado de escrever obrigava a sair do `gw` e chamar a API à mão, o que é o mesmo
+    que não verificar: a ferramenta que escreve tem de ser a que prova. `--raw` devolve o
+    recurso da Google inteiro para o que não couber aqui (esquemas personalizados, aliases
+    de terceiros), em vez de mandar o operador escrever Python.
+    """
     service = _directory_service(config)
-    return _normalize_user(execute_google_request(service.users().get(userKey=email)))
+    user = execute_google_request(service.users().get(userKey=email))
+    if raw:
+        return _redact(user)
+
+    org = _primary_organization(user)
+    return {
+        **_normalize_user(user),
+        "title": org.get("title"),
+        "department": org.get("department"),
+        "location": org.get("location"),
+        "phone": _first_phone(user),
+        "recovery_email": user.get("recoveryEmail"),
+        "recovery_phone": user.get("recoveryPhone"),
+        "aliases": user.get("aliases") or [],
+        "change_password_at_next_login": bool(user.get("changePasswordAtNextLogin", False)),
+    }
+
+
+def _user_id(email: str, config: GWConfig | None = None) -> str:
+    """A Data Transfer API toma IDs de perfil, e um email é aceite como se fosse um.
+
+    `oldOwnerUserId` e `newOwnerUserId` são IDs (discovery doc de `datatransfer_v1`, lido em
+    29/09/2026). Mandar o endereço produz um pedido que a API aceita e que não transfere
+    nada de ninguém — e a seguir apaga-se o utilizador. Resolver aqui é a diferença entre
+    uma migração e uma perda silenciosa.
+    """
+    service = _directory_service(config)
+    user = execute_google_request(service.users().get(userKey=email))
+    return user["id"]
+
+
+def list_transfer_applications(config: GWConfig | None = None) -> list[dict[str, Any]]:
+    """Os IDs de aplicação são por cliente, não constantes: descobrem-se, não se escrevem."""
+    service = _transfer_service(config)
+    rows = execute_google_request(service.applications().list(customerId=CUSTOMER)).get(
+        "applications", []
+    )
+    return [
+        {
+            "id": row.get("id"),
+            "name": row.get("name"),
+            "params": {
+                p.get("key"): p.get("value", []) for p in (row.get("transferParams") or [])
+            },
+        }
+        for row in rows
+    ]
+
+
+TRANSFER_DONE = "completed"
+
+
+def _transfer_body(
+    from_id: str,
+    to_id: str,
+    applications: list[dict[str, Any]],
+    include_shared: bool,
+) -> dict[str, Any]:
+    payload = []
+    for app in applications:
+        entry: dict[str, Any] = {"applicationId": app["id"]}
+        levels = app["params"].get("PRIVACY_LEVEL")
+        if levels:
+            # Levar o partilhado reescreve permissões em ficheiros de outras pessoas, por
+            # isso é pedido e não herdado: o que a saída de alguém tem de preservar é o que
+            # só essa pessoa tinha.
+            wanted = ["PRIVATE", "SHARED"] if include_shared else ["PRIVATE"]
+            entry["applicationTransferParams"] = [
+                {"key": "PRIVACY_LEVEL", "value": [v for v in wanted if v in levels]}
+            ]
+        payload.append(entry)
+    return {
+        "oldOwnerUserId": from_id,
+        "newOwnerUserId": to_id,
+        "applicationDataTransfers": payload,
+    }
+
+
+def create_data_transfer(
+    from_email: str,
+    to_email: str,
+    apps: tuple[str, ...] = (),
+    include_shared: bool = False,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Move a Drive e o Calendário de quem sai para quem fica, antes de apagar.
+
+    Assíncrono por natureza: `transfers.insert` responde de imediato e o trabalho corre
+    depois. O resultado traz o id para acompanhar, e `overallTransferStatusCode` começa em
+    `inProgress` — tratar essa resposta como "feito" é o erro que destrói os dados.
+    """
+    available = list_transfer_applications(config)
+    if apps:
+        wanted = {a.casefold() for a in apps}
+        chosen = [a for a in available if (a["name"] or "").casefold() in wanted]
+        missing = wanted - {(a["name"] or "").casefold() for a in chosen}
+        if missing:
+            names = ", ".join(sorted(a["name"] for a in available if a["name"]))
+            raise GwError(
+                f"Aplicação não transferível neste domínio: {', '.join(sorted(missing))}. "
+                f"Disponíveis: {names}."
+            )
+    else:
+        chosen = available
+
+    body = _transfer_body(
+        _user_id(from_email, config), _user_id(to_email, config), chosen, include_shared
+    )
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_call": "transfers.insert",
+            "body": body,
+            "dry_run_note": "os dois utilizadores foram lidos para resolver os IDs; "
+            "nada foi transferido",
+        }
+
+    service = _transfer_service(config)
+    created = execute_google_request(service.transfers().insert(body=body))
+    return {
+        "id": created.get("id"),
+        "from": from_email,
+        "to": to_email,
+        "status": created.get("overallTransferStatusCode"),
+        "applications": [a["name"] for a in chosen],
+    }
+
+
+def _normalize_transfer(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "from_id": row.get("oldOwnerUserId"),
+        "to_id": row.get("newOwnerUserId"),
+        "status": row.get("overallTransferStatusCode"),
+        "requested_at": row.get("requestTime"),
+        "applications": [
+            {"id": a.get("applicationId"), "status": a.get("applicationTransferStatus")}
+            for a in (row.get("applicationDataTransfers") or [])
+        ],
+    }
+
+
+def get_data_transfer(transfer_id: str, config: GWConfig | None = None) -> dict[str, Any]:
+    service = _transfer_service(config)
+    return _normalize_transfer(
+        execute_google_request(service.transfers().get(dataTransferId=transfer_id))
+    )
+
+
+def list_data_transfers(
+    limit: int = 0, status: str | None = None, config: GWConfig | None = None
+) -> list[dict[str, Any]]:
+    service = _transfer_service(config)
+    kwargs: dict[str, Any] = {"customerId": CUSTOMER}
+    if status:
+        kwargs["status"] = status
+    rows = _paginate(
+        service.transfers().list, items_key="dataTransfers", limit=limit, page_size=500, **kwargs
+    )
+    return [_normalize_transfer(row) for row in rows]
+
+
+def wait_for_data_transfer(
+    transfer_id: str,
+    timeout: float,
+    poll_seconds: float = 5.0,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Espera que a transferência assente, e devolve o que encontrou mesmo se não assentar.
+
+    Quem chama decide o que fazer com um estado que não é `completed`. Devolver sempre, em
+    vez de levantar, mantém a decisão de apagar num único sítio.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        state = get_data_transfer(transfer_id, config=config)
+        if state["status"] == TRANSFER_DONE or time.monotonic() >= deadline:
+            return state
+        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
 
 
 def _normalize_member(member: dict[str, Any]) -> dict[str, Any]:
@@ -697,17 +918,49 @@ def _require_match(
 def delete_admin_user(
     email: str,
     confirm_email: str | None,
+    transfer_to: str | None = None,
+    include_shared: bool = False,
+    transfer_timeout: float = 900.0,
     dry_run: bool = False,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
-    """Deleting a user destroys their Drive and Gmail. Transfer first, then delete."""
+    """Apagar destrói a Drive e o Gmail. `--transfer-to` salva-os primeiro, e só então apaga.
+
+    A ordem é a única que funciona, e a espera não é zelo: `transfers.insert` responde de
+    imediato com `inProgress` e o trabalho corre depois. Apagar nesse intervalo destrói
+    exatamente o que se estava a copiar, e destrói em silêncio — o `users.delete` responde
+    com sucesso na mesma. Por isso só `completed` autoriza o apagamento; qualquer outro
+    estado, incluindo o esgotar do prazo, levanta e deixa o utilizador de pé.
+    """
     _require_match("email", confirm_email, email, "user-delete", against="the command names")
+
     if dry_run:
-        return {"dry_run": True, "would_call": "users.delete", "userKey": email}
+        plan: dict[str, Any] = {"dry_run": True, "would_call": "users.delete", "userKey": email}
+        if transfer_to:
+            plan["would_transfer_first"] = create_data_transfer(
+                email, transfer_to, include_shared=include_shared, dry_run=True, config=config
+            )["body"]
+        return plan
+
+    transfer = None
+    if transfer_to:
+        transfer = create_data_transfer(
+            email, transfer_to, include_shared=include_shared, config=config
+        )
+        settled = wait_for_data_transfer(transfer["id"], transfer_timeout, config=config)
+        transfer["status"] = settled["status"]
+        transfer["applications_status"] = settled["applications"]
+        if settled["status"] != TRANSFER_DONE:
+            raise GwError(
+                f"A transferência {transfer['id']} está em {settled['status']!r}, não em "
+                f"{TRANSFER_DONE!r} — {email} NÃO foi apagado. Acompanhe com "
+                f"`gw admin transfer-status {transfer['id']} --wait` e repita o apagamento "
+                "quando assentar."
+            )
 
     service = _directory_service(config)
     execute_google_request(service.users().delete(userKey=email))
-    return {"deleted": email}
+    return {"deleted": email, "transfer": transfer}
 
 
 def rename_admin_user(
@@ -1282,11 +1535,31 @@ def register_admin_commands(group: click.Group) -> None:
 
     @group.command("user")
     @click.argument("email")
+    @click.option(
+        "--raw",
+        is_flag=True,
+        help="O recurso da Google inteiro, para o que a forma normalizada não cobre.",
+    )
     @json_option
     @click.pass_context
-    def user_command(ctx: click.Context, email: str, json_output: bool | None) -> None:
-        data = get_admin_user(email, config=ctx.obj["config"])
-        _emit_one(ctx, json_output, data, f"{data['email']}  {data.get('org_unit_path')}")
+    def user_command(ctx: click.Context, email: str, raw: bool, json_output: bool | None) -> None:
+        data = get_admin_user(email, raw=raw, config=ctx.obj["config"])
+        if use_json_output(ctx, json_output) or raw:
+            print_json(data)
+            return
+
+        # Campo por preencher mostra-se vazio, não "None": o operador lê a ficha para saber
+        # o que falta, e "None" lê-se como um valor.
+        def field(key: str) -> str:
+            return str(data.get(key) or "—")
+
+        print_human(f"{data['email']}  {field('full_name')}")
+        print_human(f"  unidade      {field('org_unit_path')}")
+        print_human(f"  cargo        {field('title')}  ({field('department')})")
+        print_human(f"  local        {field('location')}")
+        print_human(f"  telemóvel    {field('phone')}")
+        print_human(f"  recuperação  {field('recovery_email')}  {field('recovery_phone')}")
+        print_human(f"  último login {field('last_login_time')}")
 
     @group.command("group-members")
     @click.argument("group_email")
@@ -1340,6 +1613,22 @@ def register_admin_commands(group: click.Group) -> None:
         default=None,
         help="The user's email, retyped. Required — deleting destroys their Drive and Gmail.",
     )
+    @click.option(
+        "--transfer-to",
+        default=None,
+        help="Move a Drive e o Calendário para este utilizador ANTES de apagar, e espera.",
+    )
+    @click.option(
+        "--include-shared",
+        is_flag=True,
+        help="Leva também os ficheiros partilhados. Reescreve permissões de outras pessoas.",
+    )
+    @click.option(
+        "--transfer-timeout",
+        default=900.0,
+        show_default=True,
+        help="Segundos à espera de a transferência assentar antes de desistir sem apagar.",
+    )
     @_irreversible_write_options
     @json_option
     @click.pass_context
@@ -1347,14 +1636,116 @@ def register_admin_commands(group: click.Group) -> None:
         ctx: click.Context,
         email: str,
         confirm_email: str | None,
+        transfer_to: str | None,
+        include_shared: bool,
+        transfer_timeout: float,
         yes: bool,
         dry_run: bool,
         json_output: bool | None,
     ) -> None:
+        if include_shared and not transfer_to:
+            raise click.UsageError("--include-shared só faz sentido com --transfer-to.")
         data = delete_admin_user(
-            email=email, confirm_email=confirm_email, dry_run=dry_run, config=ctx.obj["config"]
+            email=email,
+            confirm_email=confirm_email,
+            transfer_to=transfer_to,
+            include_shared=include_shared,
+            transfer_timeout=transfer_timeout,
+            dry_run=dry_run,
+            config=ctx.obj["config"],
         )
         _emit_one(ctx, json_output, data, f"User deleted: {email}")
+
+    @group.command("transfer-apps")
+    @json_option
+    @click.pass_context
+    def transfer_apps_command(ctx: click.Context, json_output: bool | None) -> None:
+        rows = list_transfer_applications(config=ctx.obj["config"])
+        _emit(ctx, json_output, rows, lambda row: f"{row['name']}  ({row['id']})")
+
+    @group.command("transfer")
+    @click.argument("from_email")
+    @click.argument("to_email")
+    @click.option(
+        "--app",
+        "apps",
+        multiple=True,
+        help="Nome da aplicação, repetível. Sem isto vão todas as transferíveis.",
+    )
+    @click.option(
+        "--include-shared",
+        is_flag=True,
+        help="Leva também os ficheiros partilhados. Reescreve permissões de outras pessoas.",
+    )
+    @_write_options
+    @json_option
+    @click.pass_context
+    def transfer_command(
+        ctx: click.Context,
+        from_email: str,
+        to_email: str,
+        apps: tuple[str, ...],
+        include_shared: bool,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        _confirm(f"Transferir os dados de {from_email} para", to_email, yes=yes, dry_run=dry_run)
+        data = create_data_transfer(
+            from_email=from_email,
+            to_email=to_email,
+            apps=apps,
+            include_shared=include_shared,
+            dry_run=dry_run,
+            config=ctx.obj["config"],
+        )
+        _emit_one(
+            ctx,
+            json_output,
+            data,
+            f"Transferência {data.get('id')} pedida: {from_email} → {to_email} "
+            f"(estado {data.get('status')}; acompanhe com `gw admin transfer-status "
+            f"{data.get('id')} --wait`)",
+        )
+
+    @group.command("transfers")
+    @click.option("--status", default=None, help="Filtra por estado, ex. completed.")
+    @_limit_option
+    @json_option
+    @click.pass_context
+    def transfers_command(
+        ctx: click.Context, status: str | None, limit: int, json_output: bool | None
+    ) -> None:
+        rows = list_data_transfers(limit=limit, status=status, config=ctx.obj["config"])
+        _emit(ctx, json_output, rows, lambda row: f"{row['id']}  {row['status']}")
+
+    @group.command("transfer-status")
+    @click.argument("transfer_id")
+    @click.option("--wait", is_flag=True, help="Bloqueia até assentar ou esgotar o prazo.")
+    @click.option("--timeout", default=900.0, show_default=True, help="Segundos de espera.")
+    @json_option
+    @click.pass_context
+    def transfer_status_command(
+        ctx: click.Context,
+        transfer_id: str,
+        wait: bool,
+        timeout: float,
+        json_output: bool | None,
+    ) -> None:
+        config = ctx.obj["config"]
+        data = (
+            wait_for_data_transfer(transfer_id, timeout, config=config)
+            if wait
+            else get_data_transfer(transfer_id, config=config)
+        )
+        if use_json_output(ctx, json_output):
+            print_json(data)
+        else:
+            print_human(f"{data['id']}  {data['status']}")
+            for app in data["applications"]:
+                print_human(f"  {app['id']}  {app['status']}")
+        if data["status"] != TRANSFER_DONE:
+            ctx.exit(EXIT_GENERAL)
 
     @group.command("user-rename")
     @click.argument("email")
