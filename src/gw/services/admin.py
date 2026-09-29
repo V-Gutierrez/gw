@@ -369,9 +369,23 @@ def create_admin_user(
     last_name: str,
     password: str,
     org_unit: str | None = None,
+    title: str | None = None,
+    department: str | None = None,
+    location: str | None = None,
+    phone: str | None = None,
+    recovery_email: str | None = None,
+    recovery_phone: str | None = None,
     dry_run: bool = False,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
+    """Create a user with the directory profile filled in the same call.
+
+    `users.insert` takes the whole record, so the job title and the mobile number are not a
+    second pass: they either travel in this body or the account opens with a directory entry
+    that looks complete and is not. The shape of every block is the one the profiled accounts
+    in this domain already use — `organizations` is a one-element list carrying title,
+    department and location together, and the phone is the work profile's mobile.
+    """
     body: dict[str, Any] = {
         "primaryEmail": email,
         "name": {"givenName": first_name, "familyName": last_name},
@@ -381,6 +395,21 @@ def create_admin_user(
     }
     if org_unit:
         body["orgUnitPath"] = org_unit
+    if title or department or location:
+        work: dict[str, Any] = {"primary": True, "type": "work"}
+        if title:
+            work["title"] = title
+        if department:
+            work["department"] = department
+        if location:
+            work["location"] = location
+        body["organizations"] = [work]
+    if phone:
+        body["phones"] = [{"value": phone, "type": "mobile"}]
+    if recovery_email:
+        body["recoveryEmail"] = recovery_email
+    if recovery_phone:
+        body["recoveryPhone"] = recovery_phone
 
     if dry_run:
         return {"dry_run": True, "would_call": "users.insert", "body": _redact(body)}
@@ -969,6 +998,16 @@ def register_admin_commands(group: click.Group) -> None:
     @click.option("--last-name", required=True)
     @click.option("--password", required=True, help="Temporary; the user must change it at login.")
     @click.option("--org-unit", default=None, help="Org unit path, e.g. /Ops.")
+    @click.option("--title", default=None, help="Job title as the directory shows it.")
+    @click.option("--department", default=None, help="Department, e.g. Sales.")
+    @click.option("--location", default=None, help="Work location, e.g. the store's address.")
+    @click.option("--phone", default=None, help="Mobile number; stored on the work profile.")
+    @click.option(
+        "--recovery-email",
+        default=None,
+        help="Where a locked-out user is reached. The personal address goes here.",
+    )
+    @click.option("--recovery-phone", default=None, help="SMS recovery number.")
     @_write_options
     @json_option
     @click.pass_context
@@ -979,6 +1018,12 @@ def register_admin_commands(group: click.Group) -> None:
         last_name: str,
         password: str,
         org_unit: str | None,
+        title: str | None,
+        department: str | None,
+        location: str | None,
+        phone: str | None,
+        recovery_email: str | None,
+        recovery_phone: str | None,
         yes: bool,
         dry_run: bool,
         json_output: bool | None,
@@ -990,6 +1035,12 @@ def register_admin_commands(group: click.Group) -> None:
             last_name=last_name,
             password=password,
             org_unit=org_unit,
+            title=title,
+            department=department,
+            location=location,
+            phone=phone,
+            recovery_email=recovery_email,
+            recovery_phone=recovery_phone,
             dry_run=dry_run,
             config=ctx.obj["config"],
         )

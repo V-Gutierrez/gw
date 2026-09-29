@@ -1096,3 +1096,92 @@ def test_user_delete_does_not_dress_the_input_as_an_api_check(mock_build_service
     assert "reports" not in result.exception.message
     assert service.users.return_value.get.call_count == 0
     service.users.return_value.delete.assert_not_called()
+
+
+@patch("gw.services.admin.build_service")
+def test_user_create_dry_run_carries_the_directory_profile(mock_build_service: MagicMock):
+    """The profile is part of the insert, not a second pass.
+
+    `organizations`, `phones` and the recovery pair are what the directory shows and what a
+    locked-out user is reached by. Sending only the name left an account that looked complete
+    in the console and had no job title anywhere.
+    """
+    mock_build_service.return_value = MagicMock()
+
+    result = runner.invoke(
+        main,
+        [
+            "admin",
+            "user-create",
+            "diogo@example.com",
+            "--first-name",
+            "Diogo",
+            "--last-name",
+            "Coelho",
+            "--password",
+            "Tmp!12345",
+            "--org-unit",
+            "/Sales & Marketing/Sales/Stores",
+            "--title",
+            "Assistant Store Manager",
+            "--department",
+            "Sales",
+            "--location",
+            "1 Casal de Alfragide, Amadora, Lisboa 2720-413",
+            "--phone",
+            "+351926703392",
+            "--recovery-email",
+            "diogorrcoelho@gmail.com",
+            "--recovery-phone",
+            "+351926703392",
+            "--dry-run",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    body = json.loads(result.output)["body"]
+    assert body["organizations"] == [
+        {
+            "primary": True,
+            "type": "work",
+            "title": "Assistant Store Manager",
+            "department": "Sales",
+            "location": "1 Casal de Alfragide, Amadora, Lisboa 2720-413",
+        }
+    ]
+    assert body["phones"] == [{"value": "+351926703392", "type": "mobile"}]
+    assert body["recoveryEmail"] == "diogorrcoelho@gmail.com"
+    assert body["recoveryPhone"] == "+351926703392"
+    assert body["orgUnitPath"] == "/Sales & Marketing/Sales/Stores"
+    # O campo da password continua marcado, e o valor nunca sai
+    assert body["password"] == "***"
+    assert "Tmp!12345" not in result.output
+
+
+@patch("gw.services.admin.build_service")
+def test_user_create_without_profile_flags_sends_no_empty_blocks(mock_build_service: MagicMock):
+    """Um bloco vazio não é um campo em branco: é lixo que fica na ficha."""
+    mock_build_service.return_value = MagicMock()
+
+    result = runner.invoke(
+        main,
+        [
+            "admin",
+            "user-create",
+            "simples@example.com",
+            "--first-name",
+            "Simples",
+            "--last-name",
+            "Teste",
+            "--password",
+            "Tmp!12345",
+            "--dry-run",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    body = json.loads(result.output)["body"]
+    for campo in ("organizations", "phones", "recoveryEmail", "recoveryPhone", "orgUnitPath"):
+        assert campo not in body

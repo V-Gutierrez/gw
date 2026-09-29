@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.9.4 (2026-09-29)
+
+`user-create` pedia o email e o nome e deixava a ficha em branco. As contas desta org têm
+perfil: 28 das 51 trazem `organizations` com cargo, departamento e local, 40 trazem
+telefone e 21 recuperação por SMS.
+
+### Added
+- **`user-create` preenche o perfil na mesma chamada.** `--title`, `--department`,
+  `--location`, `--phone`, `--recovery-email` e `--recovery-phone`. O `users.insert` recebe
+  o registo inteiro, por isso não há segunda passagem: ou os campos viajam neste corpo, ou
+  a conta nasce com uma ficha que parece completa e não é.
+- **A forma dos blocos é a que o domínio já usa**, não uma invenção: `organizations` é uma
+  lista de um elemento que leva `title`, `department` e `location` juntos, e o telefone é o
+  `mobile` do perfil de trabalho.
+- Dois testes: o ensaio do perfil completo (bloco a bloco) e o ensaio dos comandos antigos,
+  que não pode passar a mandar blocos vazios — `{"organizations": []}` não é o mesmo que
+  não mandar nada.
+
+### Nota
+- Os blocos só aparecem quando há valor. Sem `--title`, o corpo sai exatamente como saía
+  antes: nenhuma chave nova, nenhum bloco vazio.
+
 ## v0.9.3 (2026-09-29)
 
 Três correções no grupo `admin`, encontradas ao reler as 911 linhas de escrita. Nenhuma
