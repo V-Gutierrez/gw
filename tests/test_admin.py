@@ -1275,3 +1275,161 @@ def test_yes_does_not_claim_a_prompt_the_irreversible_commands_never_show():
         help_text = runner.invoke(main, ["admin", command, "--help"]).output
         assert "Skip the confirmation prompt" not in help_text, command
         assert "--confirm-" in help_text, command
+
+
+# ------------------------------------------------- what the API actually accepts and returns
+
+
+@patch("gw.services.admin.build_service")
+def test_deprovision_carries_the_reason_the_api_demands(mock_build_service: MagicMock):
+    """`deprovision` without `deprovisionReason` is a 400 the rehearsal never showed.
+
+    The action schema published at
+    https://admin.googleapis.com/$discovery/rest?version=directory_v1 says of
+    `ChromeOsDeviceAction.deprovisionReason`: "With the `deprovision` action, this field is
+    required." The command offered `deprovision` in its choices and sent `{"action":
+    "deprovision"}`, so every real invocation failed — and `--dry-run` rehearsed a body the
+    API rejects, which is the one thing a rehearsal must not do.
+    """
+    service = MagicMock()
+    service.chromeosdevices.return_value.get.return_value = _mock_execute({"serialNumber": "SN1"})
+    service.chromeosdevices.return_value.action.return_value = _mock_execute({})
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main,
+        [
+            "admin",
+            "device-action",
+            "d1",
+            "deprovision",
+            "--confirm-serial",
+            "SN1",
+            "--reason",
+            "retiring_device",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert service.chromeosdevices.return_value.action.call_args.kwargs["body"] == {
+        "action": "deprovision",
+        "deprovisionReason": "retiring_device",
+    }
+
+
+@patch("gw.services.admin.build_service")
+def test_deprovision_without_a_reason_is_refused_here_not_by_a_400(mock_build_service: MagicMock):
+    service = MagicMock()
+    service.chromeosdevices.return_value.get.return_value = _mock_execute({"serialNumber": "SN1"})
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main, ["admin", "device-action", "d1", "deprovision", "--confirm-serial", "SN1"]
+    )
+
+    assert result.exit_code != 0
+    service.chromeosdevices.return_value.action.assert_not_called()
+
+
+@patch("gw.services.admin.build_service")
+def test_a_write_answers_in_the_same_shape_a_read_does(mock_build_service: MagicMock):
+    """One user, one JSON contract. Two was a trap for the script that reads both.
+
+    `user` returned the normalized row (`is_admin`, `org_unit_path`); the writes returned
+    Google's raw resource (`isAdmin`, `orgUnitPath`, plus `kind` and `etag`). A script that
+    created a user and then read them back had to know which half of the group it was
+    talking to.
+    """
+    raw = {
+        "kind": "admin#directory#user",
+        "etag": "abc",
+        "id": "9",
+        "primaryEmail": "new@x.com",
+        "name": {"fullName": "New Person"},
+        "isAdmin": False,
+        "orgUnitPath": "/Ops",
+    }
+    service = MagicMock()
+    service.users.return_value.insert.return_value = _mock_execute(raw)
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main,
+        [
+            "admin",
+            "user-create",
+            "new@x.com",
+            "--first-name",
+            "New",
+            "--last-name",
+            "Person",
+            "--password",
+            "Tmp!12345",
+            "--yes",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["email"] == "new@x.com"
+    assert data["org_unit_path"] == "/Ops"
+    assert data["is_admin"] is False
+    assert "isAdmin" not in data and "kind" not in data and "etag" not in data
+
+
+@patch("gw.services.admin.build_service")
+def test_reports_keeps_every_event_of_an_activity(mock_build_service: MagicMock):
+    """`Activity.events` is a list, and the row kept `events[0]`.
+
+    An activity carrying three events produced one line with no count and no trace of the
+    other two — a silent loss inside the command that exists to be an audit trail.
+    """
+    service = MagicMock()
+    service.activities.return_value.list.return_value = _mock_execute(
+        {
+            "items": [
+                {
+                    "id": {"time": "2026-09-29T10:00:00Z"},
+                    "actor": {"email": "ana@x.com"},
+                    "ipAddress": "1.2.3.4",
+                    "events": [
+                        {"name": "view", "type": "access"},
+                        {"name": "edit", "type": "access"},
+                        {"name": "download", "type": "access"},
+                    ],
+                }
+            ]
+        }
+    )
+    mock_build_service.return_value = service
+
+    result = runner.invoke(main, ["admin", "reports", "--json"])
+
+    assert result.exit_code == 0
+    row = json.loads(result.output)[0]
+    assert row["event_count"] == 3
+    assert [e["name"] for e in row["events"]] == ["view", "edit", "download"]
+
+
+@patch("gw.services.admin.build_service")
+def test_a_device_dry_run_does_not_claim_nothing_was_sent(mock_build_service: MagicMock):
+    """A read went out. Saying "nothing was sent" about it is false, and it is our sentence.
+
+    The two device actions must ask the registry who owns an opaque resource id in order to
+    check the retype, so the GET happens under `--dry-run` by design. The design is fine;
+    the line describing it was not.
+    """
+    service = MagicMock()
+    service.chromeosdevices.return_value.get.return_value = _mock_execute({"serialNumber": "SN1"})
+    mock_build_service.return_value = service
+
+    result = runner.invoke(
+        main, ["admin", "device-action", "d1", "disable", "--confirm-serial", "SN1", "--dry-run"]
+    )
+
+    assert result.exit_code == 0
+    assert "nothing was sent" not in result.output
+    assert "nothing was changed" in result.output
+    service.chromeosdevices.return_value.action.assert_not_called()

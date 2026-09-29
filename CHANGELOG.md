@@ -29,8 +29,29 @@ e provados por execução antes de tocar no código.
   — os scripts já a passam — e o help passa a dizer que é ignorada. Flag inerte anunciada
   como travão é pior do que flag nenhuma.
 
-Suíte: **379** (era 375). Os quatro testes novos foram provados vermelhos no código de
-0.9.4 antes da correção.
+- **`device-action deprovision` falhava sempre, e o ensaio ensaiava um corpo inválido.** O
+  discovery doc do Directory API (lido em 29/09/2026) diz de
+  `ChromeOsDeviceAction.deprovisionReason`: «With the `deprovision` action, this field is
+  required». O comando oferecia `deprovision` nas escolhas e enviava só `{"action":
+  "deprovision"}`. Novo `--reason`, com as quatro razões que a Google documenta para a ação,
+  validado localmente: um 400 que ninguém ensaiou vira uma recusa com as escolhas impressas.
+- **`reports` guardava só o primeiro evento de cada atividade.** `Activity.events` é uma
+  lista; três eventos davam uma linha sem contagem e sem rasto dos outros dois — perda
+  silenciosa dentro do comando cuja função é ser trilho de auditoria. A linha passa a levar
+  `event_count` e `events`; `event` e `type` continuam a ser o primeiro, para a saída humana
+  não mudar.
+- **O mesmo utilizador tinha dois contratos `--json`.** As leituras devolviam a forma
+  normalizada (`is_admin`, `org_unit_path`) e as escritas devolviam o recurso cru da Google
+  (`isAdmin`, `orgUnitPath`, mais `kind` e `etag`), pelo que um script que criava e depois
+  lia tinha de saber com que metade do grupo falava. **Mudança de contrato:** as cinco
+  escritas sobre utilizador passam a responder na forma normalizada.
+- **O `--dry-run` das duas ações de dispositivo dizia «nothing was sent» depois de enviar um
+  GET.** A leitura é por desenho — um `resourceId` opaco só se resolve perguntando — e nada
+  muda; a frase é que era falsa. Passa a dizer «the device was read to check the serial;
+  nothing was changed».
+
+Suíte: **384** (era 375). Os nove testes novos foram provados vermelhos no código de 0.9.4
+antes da correção.
 
 ## v0.9.4 (2026-09-29)
 

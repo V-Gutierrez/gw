@@ -349,6 +349,12 @@ def admin_whoami(config: GWConfig | None = None) -> dict[str, Any]:
 #    under 8.3.1 (measured 2026-09-29). A guarantee a minor bump can delete is not one.
 
 
+# The two device actions must ask the registry who owns an opaque resource id before they
+# can check the retype, so a read leaves under --dry-run. The design is deliberate; the
+# blanket "nothing was sent" that used to describe it was simply false.
+_DEVICE_DRY_RUN_NOTE = "the device was read to check the serial; nothing was changed"
+
+
 def _confirm(action: str, target: str, *, yes: bool, dry_run: bool = False) -> None:
     """Ask before changing the domain.
 
@@ -425,7 +431,7 @@ def create_admin_user(
         return {"dry_run": True, "would_call": "users.insert", "body": _redact(body)}
 
     service = _directory_service(config)
-    return _redact(execute_google_request(service.users().insert(body=body)))
+    return _normalize_user(_redact(execute_google_request(service.users().insert(body=body))))
 
 
 def set_admin_user_suspended(
@@ -439,7 +445,9 @@ def set_admin_user_suspended(
         return {"dry_run": True, "would_call": "users.update", "userKey": email, "body": body}
 
     service = _directory_service(config)
-    return _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+    return _normalize_user(
+        _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+    )
 
 
 def move_admin_user(
@@ -453,7 +461,9 @@ def move_admin_user(
         return {"dry_run": True, "would_call": "users.update", "userKey": email, "body": body}
 
     service = _directory_service(config)
-    return _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+    return _normalize_user(
+        _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+    )
 
 
 def add_admin_group_member(
@@ -492,11 +502,24 @@ def remove_admin_group_member(
 
 DEVICE_ACTIONS = ("disable", "reenable", "deprovision", "wipe_users", "remote_powerwash")
 
+# `ChromeOsDeviceAction.deprovisionReason` is required when the action is `deprovision`
+# (Directory API discovery doc, read 2026-09-29) and the doc publishes no enum for it. These
+# are the four values Google documents for the action; the device resource's own read-only
+# field lists eleven, of which the rest are deprecated or set by the system. Validating
+# locally turns a 400 nobody rehearsed into a refusal with the choices printed.
+DEPROVISION_REASONS = (
+    "same_model_replacement",
+    "different_model_replacement",
+    "retiring_device",
+    "upgrade_transfer",
+)
+
 
 def act_on_chromeos_device(
     device_id: str,
     action: str,
     confirm_serial: str,
+    reason: str | None = None,
     dry_run: bool = False,
     config: GWConfig | None = None,
 ) -> dict[str, Any]:
@@ -521,13 +544,16 @@ def act_on_chromeos_device(
             f"you typed {confirm_serial!r}. Nothing was done."
         )
 
-    body = {"action": action}
+    body: dict[str, Any] = {"action": action}
+    if reason:
+        body["deprovisionReason"] = reason
     if dry_run:
         return {
             "dry_run": True,
             "would_call": "chromeosdevices.action",
             "deviceId": device_id,
             "body": body,
+            "dry_run_note": _DEVICE_DRY_RUN_NOTE,
         }
 
     execute_google_request(
@@ -602,6 +628,13 @@ REPORT_APPS = ("login", "admin", "drive", "token", "groups", "mobile", "user_acc
 
 
 def _normalize_activity(activity: dict[str, Any]) -> dict[str, Any]:
+    """`Activity.events` is a list, and one row used to keep `events[0]`.
+
+    A single sign-in activity can carry several events, and the rest were dropped without a
+    count — a silent loss inside the one command whose job is to be an audit trail. `event`
+    and `type` stay as the first event so the human line is unchanged; the full list and the
+    count are now on the row.
+    """
     events = activity.get("events") or []
     first = events[0] if events else {}
     return {
@@ -609,6 +642,8 @@ def _normalize_activity(activity: dict[str, Any]) -> dict[str, Any]:
         "actor": (activity.get("actor") or {}).get("email"),
         "event": first.get("name"),
         "type": first.get("type"),
+        "event_count": len(events),
+        "events": [{"name": e.get("name"), "type": e.get("type")} for e in events],
         "ip_address": activity.get("ipAddress"),
     }
 
@@ -687,7 +722,9 @@ def rename_admin_user(
         return {"dry_run": True, "would_call": "users.update", "userKey": email, "body": body}
 
     service = _directory_service(config)
-    return _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+    return _normalize_user(
+        _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+    )
 
 
 def reset_admin_user_password(
@@ -706,7 +743,9 @@ def reset_admin_user_password(
         }
 
     service = _directory_service(config)
-    return _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+    return _normalize_user(
+        _redact(execute_google_request(service.users().update(userKey=email, body=body)))
+    )
 
 
 def set_admin_user_admin(
@@ -830,6 +869,7 @@ def act_on_mobile_device(
             "would_call": "mobiledevices.action",
             "resourceId": resource_id,
             "body": body,
+            "dry_run_note": _DEVICE_DRY_RUN_NOTE,
         }
 
     execute_google_request(
@@ -859,8 +899,12 @@ def _emit_one(
         # The method name alone made two rehearsals of two different payloads identical on
         # screen. `--dry-run` exists to be read before the real invocation, and the default
         # output is the human one, so the body belongs here and not only under --json.
-        print_human(f"[dry-run] {data['would_call']} — nothing was sent")
-        payload = {k: v for k, v in data.items() if k not in ("dry_run", "would_call")}
+        print_human(
+            f"[dry-run] {data['would_call']} — {data.get('dry_run_note', 'nothing was sent')}"
+        )
+        payload = {
+            k: v for k, v in data.items() if k not in ("dry_run", "would_call", "dry_run_note")
+        }
         if payload:
             for row in json.dumps(payload, indent=2, ensure_ascii=False).splitlines():
                 print_human(f"  {row}")
@@ -1194,6 +1238,12 @@ def register_admin_commands(group: click.Group) -> None:
         default=None,
         help="The device's serial, retyped. Required — --yes does not arm this command.",
     )
+    @click.option(
+        "--reason",
+        default=None,
+        type=click.Choice(DEPROVISION_REASONS),
+        help="Required by the API for `deprovision`, ignored by every other action.",
+    )
     @_device_write_options
     @json_option
     @click.pass_context
@@ -1202,6 +1252,7 @@ def register_admin_commands(group: click.Group) -> None:
         device_id: str,
         action: str,
         confirm_serial: str | None,
+        reason: str | None,
         yes: bool,
         dry_run: bool,
         json_output: bool | None,
@@ -1209,10 +1260,19 @@ def register_admin_commands(group: click.Group) -> None:
         _require_retype(
             confirm_serial, what="device-action", kind="serial", because="a wipe has no undo"
         )
+        if action == "deprovision" and not reason:
+            raise click.UsageError(
+                "deprovision requires --reason: the Directory API rejects the action without "
+                "`deprovisionReason`, and it is audited because it can return a licence. "
+                f"Choices: {', '.join(DEPROVISION_REASONS)}."
+            )
+        if action != "deprovision" and reason:
+            raise click.UsageError(f"--reason applies only to deprovision, not to {action}.")
         data = act_on_chromeos_device(
             device_id=device_id,
             action=action,
             confirm_serial=confirm_serial,
+            reason=reason,
             dry_run=dry_run,
             config=ctx.obj["config"],
         )
