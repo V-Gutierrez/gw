@@ -7,7 +7,7 @@
 <p align="center">
   <strong>Google Workspace in your terminal.</strong><br/>
   Gmail, Calendar, Contacts, Drive, Sheets, Docs, Tasks, Meet — and the domain itself. One CLI.<br/>
-  Permanent OAuth. Zero bloat.
+  OAuth, zero bloat.
 </p>
 
 <p align="center">
@@ -20,9 +20,9 @@
 
 ## Why
 
-Every Google Workspace tool is either calendar-only, admin-only, or abandoned. No single CLI covers Gmail + Calendar + Contacts + Drive + Sheets + Docs with permanent OAuth.
+Every Google Workspace tool is either calendar-only, admin-only, or abandoned. No single CLI covers Gmail + Calendar + Contacts + Drive + Sheets + Docs.
 
-`gw` fixes that. Login once, use forever. No re-auth loops, first-class JSON output, and profile-aware config when you need multiple accounts.
+`gw` fixes that. One login per profile, first-class JSON output, and profile-aware config when you need multiple accounts.
 
 Since v0.9.0 it also administers the domain: 31 commands under `gw admin` that read the inventory and manage it — create a user with their full directory profile, move a leaver's Drive to whoever stays, then delete the account. The Admin Console does all of this too, in a browser, one click at a time.
 
