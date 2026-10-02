@@ -1686,3 +1686,60 @@ def test_the_datatransfer_scopes_are_declared():
 
     assert "https://www.googleapis.com/auth/admin.datatransfer.readonly" in ADMIN_SCOPES
     assert "https://www.googleapis.com/auth/admin.datatransfer" in ADMIN_WRITE_SCOPES
+
+
+# ------------------------------------------------------------------ dynamic groups
+
+
+@patch("gw.services.admin.build_service")
+def test_group_create_dynamic_sends_query_and_waits_for_the_operation(
+    mock_build_service: MagicMock,
+):
+    """A dynamic group is a Cloud Identity group, not a Directory one.
+
+    The Directory API has no field for a membership query. The create call answers with a
+    long-running operation, so success is ``done: true`` and not the first 200 — same trap
+    as the data transfer before ``user-delete``.
+    """
+    service = MagicMock()
+    service.users.return_value.list.return_value = _mock_execute(
+        {"users": [{"primaryEmail": "a@x.com", "customerId": "C0abc"}]}
+    )
+    service.groups.return_value.create.return_value = _mock_execute(
+        {"name": "operations/op1", "done": False}
+    )
+    service.operations.return_value.get = _paged(
+        {"name": "operations/op1", "done": False},
+        {"name": "operations/op1", "done": True, "response": {"name": "groups/g1"}},
+    )
+    mock_build_service.return_value = service
+    query = "user.suspended == false"
+
+    result = runner.invoke(
+        main,
+        ["admin", "group-create-dynamic", "todos@x.com", "--name", "Todos", "--query", query,
+         "--yes", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    kwargs = service.groups.return_value.create.call_args.kwargs
+    assert kwargs["initialGroupConfig"] == "EMPTY"
+    body = kwargs["body"]
+    assert body["parent"] == "customers/C0abc"
+    assert body["groupKey"] == {"id": "todos@x.com"}
+    assert body["dynamicGroupMetadata"]["queries"] == [{"resourceType": "USER", "query": query}]
+    assert service.operations.return_value.get.call_count == 2
+    assert json.loads(result.output)["group"] == "groups/g1"
+
+
+@patch("gw.services.admin.build_service")
+def test_group_create_dynamic_dry_run_changes_nothing(mock_build_service: MagicMock):
+    result = runner.invoke(
+        main,
+        ["admin", "group-create-dynamic", "todos@x.com", "--name", "Todos",
+         "--query", "user.suspended == false", "--dry-run"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "groups.create" in result.output
+    assert "user.suspended == false" in result.output
+    mock_build_service.assert_not_called()

@@ -68,6 +68,9 @@ ADMIN_SCOPES = [
     # Ver que transferências existem e o que este domínio consegue mover. A leitura é
     # separada da escrita aqui como em tudo o resto: listar não inicia nada.
     "https://www.googleapis.com/auth/admin.datatransfer.readonly",
+    # Grupos dinâmicos vivem na Cloud Identity, não no Directory: o scope de grupos do
+    # Directory não os alcança.
+    "https://www.googleapis.com/auth/cloud-identity.groups.readonly",
 ]
 
 # Administração com escrita. Cada um destes substitui o `.readonly` correspondente — o
@@ -88,6 +91,8 @@ ADMIN_WRITE_SCOPES = [
     # Mover a Drive e o Calendário de quem sai para quem fica. É o scope que torna
     # `user-delete --transfer-to` possível: sem ele, apagar é destruir.
     "https://www.googleapis.com/auth/admin.datatransfer",
+    # Criar e alterar grupos dinâmicos (`group-create-dynamic`). Substitui o `.readonly`.
+    "https://www.googleapis.com/auth/cloud-identity.groups",
 ]
 
 

@@ -944,3 +944,11 @@ class TestProfileScopes:
         assert ADMIN_SCOPES
         for scope in ADMIN_SCOPES:
             assert scope.endswith(".readonly"), scope
+
+
+def test_admin_write_scopes_grant_cloud_identity_groups() -> None:
+    """Dynamic groups live in Cloud Identity; the Directory group scope does not reach them."""
+    from gw.auth import ADMIN_SCOPES, ADMIN_WRITE_SCOPES
+
+    assert "https://www.googleapis.com/auth/cloud-identity.groups" in ADMIN_WRITE_SCOPES
+    assert "https://www.googleapis.com/auth/cloud-identity.groups.readonly" in ADMIN_SCOPES

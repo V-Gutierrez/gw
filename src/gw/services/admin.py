@@ -48,6 +48,15 @@ def _directory_service(config: GWConfig | None = None):
     return build_service("admin", "directory_v1", config=config)
 
 
+def _identity_service(config: GWConfig | None = None):
+    """Grupos dinâmicos são a Cloud Identity API (`cloudidentity`/`v1`), não a Directory.
+
+    A Directory não tem campo para a query de pertença. Exige a API ligada no projeto do
+    client OAuth e uma edição com grupos dinâmicos (Enterprise ou Cloud Identity Premium).
+    """
+    return build_service("cloudidentity", "v1", config=config)
+
+
 def _chrome_service(config: GWConfig | None = None):
     return build_service("chromemanagement", "v1", config=config)
 
@@ -1034,6 +1043,70 @@ def create_admin_group(
     return _normalize_group(execute_google_request(service.groups().insert(body=body)))
 
 
+DYNAMIC_OPERATION_TIMEOUT_SECONDS = 60.0
+
+
+def create_dynamic_group(
+    email: str,
+    name: str,
+    query: str,
+    description: str | None = None,
+    dry_run: bool = False,
+    config: GWConfig | None = None,
+) -> dict[str, Any]:
+    """Cria um grupo cuja pertença o Google mantém a partir de uma query CEL.
+
+    A chamada devolve uma operação de longa duração: o primeiro 200 não é o grupo criado.
+    Só `done` fecha, e uma operação com `error` levanta em vez de passar por sucesso.
+    """
+    body: dict[str, Any] = {
+        "groupKey": {"id": email},
+        "displayName": name,
+        "labels": {"cloudidentity.googleapis.com/groups.discussion_forum": ""},
+        "dynamicGroupMetadata": {"queries": [{"resourceType": "USER", "query": query}]},
+    }
+    if description:
+        body["description"] = description
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_call": "groups.create",
+            "initialGroupConfig": "EMPTY",
+            "body": {"parent": "customers/<resolved from the directory>", **body},
+        }
+
+    # O ID numérico do cliente vem de qualquer utilizador do domínio, para não ir parar a
+    # config nem ao repo.
+    users = execute_google_request(
+        _directory_service(config).users().list(customer=CUSTOMER, maxResults=1)
+    ).get("users", [])
+    customer_id = users[0].get("customerId") if users else None
+    if not customer_id:
+        raise GwError("could not resolve the customer ID from the directory")
+    body = {"parent": f"customers/{customer_id}", **body}
+
+    service = _identity_service(config)
+    operation = execute_google_request(
+        service.groups().create(body=body, initialGroupConfig="EMPTY")
+    )
+    deadline = time.monotonic() + DYNAMIC_OPERATION_TIMEOUT_SECONDS
+    while not operation.get("done"):
+        if time.monotonic() > deadline:
+            raise GwError(
+                f"group creation still running after {DYNAMIC_OPERATION_TIMEOUT_SECONDS:.0f}s: "
+                f"{operation.get('name')}"
+            )
+        time.sleep(1.0)
+        operation = execute_google_request(service.operations().get(name=operation["name"]))
+    if operation.get("error"):
+        raise GwError(f"group creation failed: {operation['error'].get('message', operation['error'])}")
+    return {
+        "group": operation.get("response", {}).get("name"),
+        "email": email,
+        "query": query,
+    }
+
+
 def delete_admin_group(
     email: str,
     confirm_email: str | None,
@@ -1857,6 +1930,40 @@ def register_admin_commands(group: click.Group) -> None:
             config=ctx.obj["config"],
         )
         _emit_one(ctx, json_output, data, f"Group created: {group_email}")
+
+    @group.command("group-create-dynamic")
+    @click.argument("group_email")
+    @click.option("--name", required=True)
+    @click.option(
+        "--query",
+        required=True,
+        help="Membership query in CEL, e.g. \"user.suspended == false\". Google keeps the "
+        "membership in step with it; nobody adds or removes members by hand.",
+    )
+    @click.option("--description", default=None)
+    @_write_options
+    @json_option
+    @click.pass_context
+    def group_create_dynamic_command(
+        ctx: click.Context,
+        group_email: str,
+        name: str,
+        query: str,
+        description: str | None,
+        yes: bool,
+        dry_run: bool,
+        json_output: bool | None,
+    ) -> None:
+        _confirm("Create dynamic group", group_email, yes=yes, dry_run=dry_run)
+        data = create_dynamic_group(
+            email=group_email,
+            name=name,
+            query=query,
+            description=description,
+            dry_run=dry_run,
+            config=ctx.obj["config"],
+        )
+        _emit_one(ctx, json_output, data, f"Dynamic group created: {group_email}")
 
     @group.command("group-delete")
     @click.argument("group_email")
