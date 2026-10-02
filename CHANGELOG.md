@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.9.7 (2026-10-02)
+
+O grupo `admin` ganha grupos dinâmicos, e o primeiro domínio real em que correram disse
+que o plano não os tem.
+
+### Added
+
+- **`group-create-dynamic EMAIL --name N --query CEL` cria um grupo cuja pertença o Google
+  mantém.** Vive na Cloud Identity API (`cloudidentity`/`v1`), não na Directory: a Directory
+  não tem campo para a query. A criação devolve uma operação de longa duração, e o primeiro
+  200 não é o grupo criado, por isso o comando espera o `done` e levanta erro se a operação
+  trouxer `error` ou passar de 60s. O ID numérico do cliente sai de um utilizador do
+  domínio, não da config. Tem `--dry-run` (mostra o corpo, sem telefonar) e `--yes`.
+- **Escopo `cloud-identity.groups`** em `auth login --admin-write`, e a variante
+  `.readonly` em `--admin`. Quem já tem o perfil `csadmin` re-consente uma vez.
+
+### Verified against a real domain
+
+- O `controlspacestorage.com` respondeu `403 — Dynamic Groups requires a premium SKU`.
+  Grupos dinâmicos só existem em Workspace Enterprise Standard/Plus, Enterprise Essentials
+  Plus, Frontline e Cloud Identity Premium. O comando está testado com mocks (a suíte tem
+  396 testes) e **não foi exercitado de ponta a ponta com sucesso**; o erro de edição foi.
+- A Cloud Identity API tem de estar ligada no projeto do client OAuth antes da primeira
+  chamada: sem isso o erro é um 403 `SERVICE_DISABLED` com o link para a ligar.
+
 ## v0.9.6 (2026-09-29)
 
 Apagar um utilizador deixa de destruir a Drive dele. O grupo `admin` ganha a Data Transfer
