@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.0 (2026-10-08)
 
 O `gw` passa a falar com o Google Chat como o próprio utilizador.
 
