@@ -4,7 +4,7 @@ from typing import Any
 
 import click
 
-from gw.auth import credential_status
+from gw.auth import CHAT_SCOPES, credential_status, granted_scopes
 from gw.config import GWConfig
 from gw.output import print_human, print_json
 
@@ -34,7 +34,8 @@ def run_doctor(config: GWConfig) -> dict[str, Any]:
         },
         *_api_checks(config, authenticated=bool(status["authenticated"])),
     ]
-    return {"ok": all(check["status"] == "ok" for check in checks), "checks": checks}
+    ok = all(check["status"] in {"ok", "skipped"} for check in checks)
+    return {"ok": ok, "checks": checks}
 
 
 # Every API gw talks to, with a cheap read that proves it answers.
@@ -63,6 +64,9 @@ def _probe_api(api: str, config: GWConfig) -> None:
     elif api == "tasks":
         service = build_service("tasks", "v1", config=config)
         execute_google_request(service.tasklists().list(maxResults=1))
+    elif api == "chat":
+        service = build_service("chat", "v1", config=config)
+        execute_google_request(service.spaces().list(pageSize=1))
     elif api == "people":
         service = build_service("people", "v1", config=config)
         execute_google_request(
@@ -98,6 +102,7 @@ _API_HOSTS = {
     "docs": "docs.googleapis.com",
     "tasks": "tasks.googleapis.com",
     "people": "people.googleapis.com",
+    "chat": "chat.googleapis.com",
 }
 
 
@@ -126,7 +131,23 @@ def _api_checks(config: GWConfig, *, authenticated: bool) -> list[dict[str, Any]
             checks.append(_classify(api, exc))
         else:
             checks.append({"name": f"api_{api}", "status": "ok", "detail": "Reachable"})
+    checks.append(_chat_check(config))
     return checks
+
+
+def _chat_check(config: GWConfig) -> dict[str, Any]:
+    """Chat is opt-in per profile, so a token without it is a choice, not a failure."""
+    if not set(CHAT_SCOPES) <= set(granted_scopes(config)):
+        return {
+            "name": "api_chat",
+            "status": "skipped",
+            "detail": "Not consented — opt in with `gw auth login --chat` (Workspace only)",
+        }
+    try:
+        _probe_api("chat", config)
+    except Exception as exc:  # noqa: BLE001 - any failure here is a failed check
+        return _classify("chat", exc)
+    return {"name": "api_chat", "status": "ok", "detail": "Reachable"}
 
 
 def print_doctor_report(report: dict[str, Any]) -> None:

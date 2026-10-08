@@ -15,6 +15,7 @@ from gw.mcp_server import run_mcp_server, set_mcp_config
 from gw.output import json_option, print_human, print_json, render_error, use_json_output
 from gw.services.admin import register_admin_commands
 from gw.services.calendar import register_calendar_commands, register_meet_commands
+from gw.services.chat import register_chat_commands
 from gw.services.contacts import register_contacts_commands
 from gw.services.docs import register_docs_commands
 from gw.services.drive import register_drive_commands
@@ -99,6 +100,7 @@ config_click_group = cast(click.Group, config_group)
 admin_group = click.Group(name="admin")
 auth_group = click.Group(name="auth")
 calendar_group = click.Group(name="calendar")
+chat_group = click.Group(name="chat")
 contacts_group = click.Group(name="contacts")
 gmail_group = click.Group(name="gmail")
 drive_group = click.Group(name="drive")
@@ -171,6 +173,7 @@ config_click_group.add_command(config_path)
 register_admin_commands(admin_group)
 register_auth_commands(auth_group)
 register_calendar_commands(calendar_group)
+register_chat_commands(chat_group)
 register_contacts_commands(contacts_group)
 register_gmail_commands(gmail_group)
 register_drive_commands(drive_group)
@@ -187,6 +190,7 @@ main_group.add_command(config_click_group)
 main_group.add_command(doctor_cli)
 main_group.add_command(mcp_click_group)
 main_group.add_command(calendar_group)
+main_group.add_command(chat_group)
 main_group.add_command(contacts_group)
 main_group.add_command(gmail_group)
 main_group.add_command(drive_group)

@@ -47,6 +47,19 @@ DEFAULT_SCOPES = [
     "openid",
 ]
 
+# Google Chat as the user. Separate from DEFAULT_SCOPES for the same reason as the admin
+# lists: the Chat API exists only for Workspace accounts, so the personal @gmail.com profile
+# must never ask for it, and widening the default would re-consent every profile. Opt in per
+# profile with `gw auth login --chat`. No `.delete`, no `.admin.*`, no `.import`: deleting a
+# delivered message has no undo and is not part of this group.
+CHAT_SCOPES = [
+    "https://www.googleapis.com/auth/chat.spaces.readonly",
+    "https://www.googleapis.com/auth/chat.spaces.create",
+    # Read and send in one scope: `chat.messages.create` alone cannot list a space.
+    "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/chat.memberships.readonly",
+]
+
 # Read-only Workspace administration. Deliberately a separate list from DEFAULT_SCOPES:
 # these are never handed to the personal, consi or controlspace profiles. They belong to a
 # dedicated profile with its own token file, which is why adding them cannot disturb —
@@ -535,6 +548,12 @@ def register_auth_commands(auth_group: click.Group) -> None:
         is_flag=True,
         help="Consent to administration that can CHANGE the domain: create, suspend, delete.",
     )
+    @click.option(
+        "--chat",
+        "chat_mode",
+        is_flag=True,
+        help="Also consent to Google Chat as this user (Workspace accounts only).",
+    )
     @json_option
     @click.pass_context
     def login_cmd(
@@ -545,12 +564,18 @@ def register_auth_commands(auth_group: click.Group) -> None:
         code: str | None,
         admin_mode: bool,
         admin_write_mode: bool,
+        chat_mode: bool,
         json_output: bool | None,
     ) -> None:
         config = cast(GWConfig, ctx.obj["config"])
         extra_scopes = (
             ADMIN_WRITE_SCOPES if admin_write_mode else (ADMIN_SCOPES if admin_mode else None)
         )
+        if chat_mode:
+            # Chat rides on top of whatever this login would otherwise ask for, so a profile
+            # with no token yet still gets Gmail, Calendar and Drive alongside it.
+            base = extra_scopes or getattr(config, "scopes", None) or DEFAULT_SCOPES
+            extra_scopes = list(dict.fromkeys([*base, *CHAT_SCOPES]))
         creds = login(
             scopes=extra_scopes,
             headless=headless,

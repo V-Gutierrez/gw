@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+O `gw` passa a falar com o Google Chat como o próprio utilizador.
+
+### Added
+
+- **Grupo `gw chat`**: `spaces` (com `--type`), `space`, `dm EMAIL`, `messages SPACE`
+  (mais recentes primeiro, `--after 6h|7d|YYYY-MM-DD`, `--thread`), `read`, `members`,
+  `send SPACE TEXTO` (`--body-file`, `--thread`, `--dry-run`) e `create NOME --member`
+  (`--dry-run`). O space aceita `spaces/AAA…` ou só `AAA…`. Só texto: cartões exigem app.
+- **`gw auth login --chat`** pede os quatro scopes de Chat por cima do conjunto normal do
+  perfil. Ficam fora de `DEFAULT_SCOPES` porque o Chat só existe em contas Workspace e o
+  perfil pessoal não o pode pedir. Sem `.delete`, `.admin.*` nem `.import`.
+- **Gate de scope antes da chamada**: comando de Chat com token sem consentimento sai com
+  exit 2 e a linha exata a correr, em vez do 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`.
+- **«Google Chat app not found»** passa a dizer onde configurar o app na consola.
+- **`gw doctor` ganha `api_chat`**: sonda real quando o token tem os scopes, `skipped`
+  (que conta como verde) quando o perfil não optou pelo Chat.
+
+### Not verified end to end
+
+- Nenhum perfil tem ainda o consentimento de Chat. Contra o token real do `controlspace`
+  ficou provado o gate (exit 2), o `--dry-run` e o `doctor`; a leitura e o envio estão
+  cobertos por 27 testes com mocks.
+
 ## v0.9.7 (2026-10-02)
 
 O grupo `admin` ganha grupos dinâmicos, e o primeiro domínio real em que correram disse

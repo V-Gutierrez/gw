@@ -398,6 +398,26 @@ gw --json sheets read "spreadsheet_id" "Sheet1!A1:C10"
 
 ---
 
+## Chat Commands
+
+Google Chat as the user. Opt in per profile (Workspace accounts only):
+`gw --profile controlspace auth login --chat`. The Chat API must be on and the Chat app
+configured (name, avatar, description) in the OAuth client's Cloud project.
+
+```bash
+gw chat spaces [--type SPACE|GROUP_CHAT|DIRECT_MESSAGE] [--max 100]
+gw chat space SPACE
+gw chat dm ana@example.com                  # the DM space with someone
+gw chat messages SPACE [--after 7d] [--thread spaces/X/threads/T] [--max 25]
+gw chat read spaces/X/messages/M
+gw chat members SPACE
+gw chat send SPACE "text" [--thread spaces/X/threads/T] [--dry-run]
+gw chat send SPACE --body-file msg.txt
+gw chat create "Ops" --member a@x.com --member b@x.com [--description D] [--dry-run]
+```
+
+SPACE is `spaces/AAAA…` or just `AAAA…`. Plain text only: cards and buttons need a Chat app.
+
 ## Docs Commands
 
 ```bash

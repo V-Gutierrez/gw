@@ -39,12 +39,16 @@ def test_doctor_is_green_when_every_api_answers() -> None:
     with (
         patch("gw.doctor.credential_status", return_value={"authenticated": True}),
         patch("gw.doctor._probe_api", side_effect=_reachable),
+        patch("gw.doctor.granted_scopes", return_value=[]),
         patch("gw.config.GWConfig.credentials", MagicMock(exists=lambda: True)),
         patch("gw.config.GWConfig.token", MagicMock(exists=lambda: True)),
     ):
         report = run_doctor(GWConfig())
 
-    api_checks = [c for c in report["checks"] if c["name"].startswith("api_")]
+    # Chat is opt-in per profile: without its scopes it reports "skipped", which is green.
+    api_checks = [
+        c for c in report["checks"] if c["name"].startswith("api_") and c["status"] != "skipped"
+    ]
     assert len(api_checks) >= 5
     assert all(check["status"] == "ok" for check in api_checks)
 
