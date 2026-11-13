@@ -240,6 +240,7 @@ def share_drive_file(
             fileId=file_id,
             body={"type": "user", "emailAddress": email, "role": role},
             fields="id,emailAddress,role,type",
+            supportsAllDrives=True,
         )
     )
     return {
